@@ -216,6 +216,22 @@ export default async function (fastify, opts) {
             console.log("[ElevenLabs] Connected to Conversational AI"); // Keep original log too
             isElevenLabsWsOpen = true;
             if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen(); // Signal that WS is open
+
+            // --- Send Minimal Initial Config on Open --- 
+            console.log("[!!! Debug EL Setup] Sending minimal init message to EL...");
+            try {
+              const minimalInitialConfig = {
+                  type: "conversation_initiation_client_data",
+                  // Sending empty objects might be enough to trigger initialization
+                  conversation_config_override: {}, 
+                  dynamic_variables: {}        
+              };
+              elevenLabsWs.send(JSON.stringify(minimalInitialConfig));
+              console.log("[!!! Debug EL Setup] Minimal init message sent.");
+            } catch (sendError) {
+               console.error("[!!! Debug EL Setup] Error sending minimal init message:", sendError);
+            }
+            // -----------------------------------------
           });
 
           elevenLabsWs.on("message", (data) => {
@@ -369,11 +385,6 @@ export default async function (fastify, opts) {
                  // --- Add Log 4: Before AMD check --- 
                  console.log("[!!! Debug Start Event] Checking AMD result...");
                 // Check AMD Result 
-                if (callSid && !amdResults[callSid]) {
-                    console.log(`[AMD Check] Result for ${callSid} not yet available, waiting briefly...`);
-                    await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms
-                }
-                
                 if (callSid && amdResults[callSid]) {
                     const answeredBy = amdResults[callSid];
                     amdResult = answeredBy;
@@ -401,45 +412,8 @@ export default async function (fastify, opts) {
                 // --- Add Log 6: Before defining sendInitialConfig --- 
                 // console.log("[!!! Debug Start Event] Defining sendInitialConfig...");
                 // // Define and call sendInitialConfig (amdResult is now in scope)
-                // const sendInitialConfig = () => {
-                //   // --- Add Log 7: Inside sendInitialConfig --- 
-                //   console.log("[!!! Debug Start Event] Inside sendInitialConfig. EL WS State:", elevenLabsWs?.readyState);
-                //   if (isElevenLabsWsOpen && elevenLabsWs?.readyState === WebSocket.OPEN) {
-                //       let initialMessageData;
-                //       if (isVoicemail) {
-                //           initialMessageData = { type: "voicemail_detected" };
-                //           console.log("[ElevenLabs] Sending voicemail_detected signal");
-                //       } else {
-                //           initialMessageData = {
-                //             type: "conversation_initiation_client_data",
-                //             // Add conversation_config_override structure (can be empty if no override needed)
-                //             conversation_config_override: { 
-                //                 // agent: { 
-                //                 //     prompt: { prompt: "Optional override prompt..." },
-                //                 //     first_message: "Optional override first message...",
-                //                 //     language: "en" 
-                //                 // },
-                //                 // tts: { 
-                //                 //     voice_id: "Optional override voice ID..." 
-                //                 // }
-                //             },
-                //             dynamic_variables: {
-                //               customer_name: callCustomParameters?.name || "Customer",
-                //               customer_number: callCustomParameters?.number || "Unknown",
-                //               amd_result: amdResult,
-                //               airtable_record_id: callCustomParameters?.airtableRecordId || null
-                //             },
-                //           };
-                //           console.log("[ElevenLabs] Sending initial conversation config:", initialMessageData);
-                //       }
-                //       elevenLabsWs.send(JSON.stringify(initialMessageData));
-                //   } else {
-                //       console.error("[ElevenLabs] WebSocket not open when attempting to send initial message. Cannot send.");
-                //   }
-                // };
-                // // --- Add Log 8: Before calling sendInitialConfig --- 
-                // console.log("[!!! Debug Start Event] Calling sendInitialConfig...");
-                // sendInitialConfig();
+                // --- WE ARE NO LONGER CALLING sendInitialConfig from here ---
+
                 // // --- Add Log 9: After calling sendInitialConfig --- 
                 console.log("[!!! Debug Start Event] Finished processing start event logic (sendInitialConfig SKIPPED)."); // Modified Log 9
 
@@ -518,23 +492,36 @@ export default async function (fastify, opts) {
   fastify.post("/call-status", async (request, reply) => {
     const { 
         CallSid, 
-        CallStatus, // e.g., initiated, ringing, answered, completed, busy, no-answer, failed 
-        AnsweredBy, // IMPORTANT: Check if this is populated in the 'completed' event
+        CallStatus, 
+        AnsweredBy, // Values can include: machine_start, human, fax, unknown etc.
         Duration, 
         Timestamp 
-        // Add any other fields you need from the callback payload
     } = request.body;
     
     // Log the received status
     console.log(`[Call Status] CallSid: ${CallSid}, Status: ${CallStatus}, AnsweredBy: ${AnsweredBy}, Duration: ${Duration}`);
 
-    // --- TODO: Add logic here if needed --- 
-    // For example, you could store the final status (especially AnsweredBy)
-    // in a database or cache associated with the CallSid, 
-    // so your n8n workflow could retrieve it later.
-    // Example (in-memory, simple):
-    // finalCallStatuses[CallSid] = { status: CallStatus, answeredBy: AnsweredBy };
-    // ----------------------------------------
+    // --- Voicemail/Machine Detection Hangup Logic --- 
+    // Check if AnsweredBy indicates a machine
+    const machineResponses = ["machine_start", "fax"]; // Add others like machine_end_beep if needed
+    if (AnsweredBy && machineResponses.includes(AnsweredBy)) {
+      console.log(`[AMD] Machine detected (${AnsweredBy}) for CallSid: ${CallSid}. Ending call.`);
+      try {
+        // Use the Twilio client to end the call
+        await twilioClient.calls(CallSid).update({ status: "completed" });
+        console.log(`[AMD] Successfully sent command to end call ${CallSid}`);
+      } catch (error) {
+        console.error(`[AMD] Error trying to end call ${CallSid} after machine detection:`, error);
+      }
+      // No need to store in amdResults if we hang up immediately
+    } else if (AnsweredBy && AnsweredBy === "human") {
+       console.log(`[AMD] Human detected for CallSid: ${CallSid}. Call continues.`);
+       // Optionally store this confirmation if needed elsewhere, but amdResults isn't used now
+       // amdResults[CallSid] = AnsweredBy; 
+    } else if (AnsweredBy) {
+       console.log(`[AMD] Received AnsweredBy status '${AnsweredBy}' for CallSid: ${CallSid}. Call continues.`);
+    }
+    // -----------------------------------------------
 
     reply.status(200).send(); // Respond OK to Twilio
   });
