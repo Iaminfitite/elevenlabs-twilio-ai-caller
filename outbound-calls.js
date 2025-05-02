@@ -198,6 +198,7 @@ export default async function (fastify, opts) {
       let resolveElevenLabsWsOpen = null;
       const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
       let isElevenLabsWsOpen = false;
+      let twilioAudioBuffer = []; // <-- Add buffer array
 
       ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
@@ -228,8 +229,25 @@ export default async function (fastify, opts) {
               };
               elevenLabsWs.send(JSON.stringify(minimalInitialConfig));
               console.log("[!!! Debug EL Setup] Minimal init message sent.");
+
+              // --- Send Buffered Audio --- 
+              if (twilioAudioBuffer.length > 0) {
+                console.log(`[!!! Debug EL Setup] Sending ${twilioAudioBuffer.length} buffered audio chunks...`);
+                twilioAudioBuffer.forEach(audioChunk => {
+                  try {
+                    const audioMessage = { user_audio_chunk: audioChunk };
+                    elevenLabsWs.send(JSON.stringify(audioMessage));
+                  } catch (bufferSendError) {
+                    console.error("[!!! Debug EL Setup] Error sending buffered audio chunk:", bufferSendError);
+                  }
+                });
+                twilioAudioBuffer = []; // Clear buffer
+                console.log("[!!! Debug EL Setup] Finished sending buffered audio.");
+              }
+              // ---------------------------
+
             } catch (sendError) {
-               console.error("[!!! Debug EL Setup] Error sending minimal init message:", sendError);
+               console.error("[!!! Debug EL Setup] Error sending minimal init message or buffered audio:", sendError);
             }
             // -----------------------------------------
           });
@@ -425,16 +443,21 @@ export default async function (fastify, opts) {
             case "media":
               // --- Add Log H: Media event received, before check --- 
               console.log("[!!! Debug Media] Media received from Twilio. Checking EL WS state...");
+              const audioPayloadBase64 = Buffer.from(msg.media.payload, "base64").toString("base64");
+              
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                 // --- Add Log I: Attempting to send audio to EL --- 
                 console.log("[!!! Debug Media] EL WS is OPEN. Attempting to forward audio...");
-                const audioMessage = {
-                  user_audio_chunk: Buffer.from(
-                    msg.media.payload,
-                    "base64"
-                  ).toString("base64"),
-                };
-                elevenLabsWs.send(JSON.stringify(audioMessage));
+                try {
+                  const audioMessage = { user_audio_chunk: audioPayloadBase64 };
+                  elevenLabsWs.send(JSON.stringify(audioMessage));
+                } catch (mediaSendError) {
+                   console.error("[!!! Debug Media] Error sending live audio chunk:", mediaSendError);
+                }
+              } else {
+                 // --- Buffer the audio if WS not open yet ---
+                 console.log("[!!! Debug Media] EL WS is NOT OPEN. Buffering audio chunk.");
+                 twilioAudioBuffer.push(audioPayloadBase64);
               }
               break;
 
