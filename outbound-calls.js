@@ -590,50 +590,79 @@ export default async function (fastify, opts) {
   });
 }
 
-// --- START: Update Tool Execution Function ---
-// IMPORTANT: Replace placeholder logic with your actual API calls
+// --- START: Update Tool Execution Function to Call Webhooks ---
 async function handleToolExecution(toolName, parameters) {
-    console.log(`[Server] Attempting to execute tool: ${toolName} with params:`, JSON.stringify(parameters)); // Log params too
-    
-    // Load necessary secrets (even if placeholder doesn't use them yet)
+    console.log(`[Server] Attempting to execute tool: ${toolName} with params:`, JSON.stringify(parameters));
+
     const calComApiKey = process.env.CAL_COM_API_KEY;
-    if (!calComApiKey && (toolName === 'book_meeting' || toolName === 'get_available_slots')) {
-        console.error(`[Server] Error: CAL_COM_API_KEY environment variable is not set, but required for tool '${toolName}'`);
-        throw new Error(`Missing required API key for tool '${toolName}'.`);
+    if (!calComApiKey) {
+        console.error("[Server] Error: CAL_COM_API_KEY environment variable is not set.");
+        throw new Error("Missing required CAL_COM_API_KEY.");
     }
 
-    // Simulate an API call delay
-    await new Promise(resolve => setTimeout(resolve, 1000)); 
+    let url;
+    let options = {
+        headers: {
+            // Note: Authorization format might need adjustment (e.g., 'Bearer ' or specific Cal.com format)
+            // Assuming direct API key usage for now based on EL config, but check Cal.com docs.
+            'Authorization': `ApiKey ${calComApiKey}`, // Common pattern, adjust if needed 
+            'Content-Type': 'application/json' 
+        }
+    };
 
-    // Use tool names from the screenshot
-    if (toolName === 'book_meeting') { 
-        // TODO: Implement your actual booking logic using calComApiKey
-        // Example: const bookingResult = await callCalComBookingApi(calComApiKey, parameters.date, parameters.time, ...);
-        console.log(`[Server] Simulating SUCCESS for tool: ${toolName}`);
-        // Return a structure Cal.com might expect or that your agent prompt expects
-        return { success: true, bookingId: `cal-${Date.now()}`, message: `Booking confirmed for ${parameters?.dateTime || 'selected time'}.` };
+    try {
+        if (toolName === 'book_meeting') {
+            url = 'https://api.cal.com/v2/bookings';
+            options.method = 'POST';
+            options.headers['cal-api-version'] = '2024-08-13'; // From screenshot
+            options.body = JSON.stringify(parameters); // Send EL params as body
+            
+            console.log(`[Server] Calling ${options.method} ${url} with body:`, options.body);
 
-    } else if (toolName === 'get_available_slots') { 
-        // TODO: Implement availability check logic using calComApiKey
-        // Example: const slots = await callCalComAvailabilityApi(calComApiKey, parameters.dateRangeStart, ...);
-        console.log(`[Server] Simulating SUCCESS for tool: ${toolName}`);
-        // Return a structure Cal.com might expect or that your agent prompt expects
-        return { availableSlots: ["2024-07-30T10:00:00", "2024-07-30T14:30:00"], message: "Found some available times." };
+        } else if (toolName === 'get_available_slots') {
+            // For GET requests, parameters usually go into the URL query string
+            const queryParams = new URLSearchParams(parameters).toString();
+            url = `https://api.cal.com/v2/slots?${queryParams}`;
+            options.method = 'GET';
+            options.headers['cal-api-version'] = '2024-09-04'; // From screenshot
+            // No body for GET requests
+            
+            console.log(`[Server] Calling ${options.method} ${url}`);
 
-    } else if (toolName === 'end_call') {
-        // This is marked 'System' in EL dashboard. EL might handle termination.
-        // We'll log it and return success, but might need adjustment based on observed behavior.
-        console.log(`[Server] Received request for System tool: ${toolName}. Assuming ElevenLabs handles call termination.`);
-        // Optionally, you *could* trigger your server-side hangup logic here if needed:
-        // if (callSid) { 
-        //     try { await twilioClient.calls(callSid).update({ status: "completed" }); } catch(e){ console.error('Error ending call via tool:', e); }
-        // }
-        return { success: true, message: "Call end request acknowledged." };
+        } else if (toolName === 'end_call') {
+            console.log(`[Server] Received request for System tool: ${toolName}.`);
+            // Returning success, assuming EL or other logic handles termination
+            return { success: true, message: "Call end request acknowledged." };
+        } else {
+            console.warn(`[Server] Unknown tool requested: ${toolName}`);
+            throw new Error(`Tool '${toolName}' is not implemented.`);
+        }
+
+        const response = await fetch(url, options);
+        const responseBody = await response.text(); // Read body first for better error logging
+
+        console.log(`[Server] Received response from ${url}: Status=${response.status}, Body=${responseBody}`);
+
+        if (!response.ok) {
+            throw new Error(`API call failed with status ${response.status}: ${responseBody}`);
+        }
         
-    } else {
-        // Handle unknown tools
-        console.warn(`[Server] Unknown tool requested: ${toolName}`);
-        throw new Error(`Tool '${toolName}' is not implemented.`);
+        // Attempt to parse JSON, handle potential errors if body isn't valid JSON
+        try {
+            const jsonResult = JSON.parse(responseBody);
+            console.log(`[Server] Successfully executed tool: ${toolName}`);
+            return jsonResult; // Return the actual JSON response from Cal.com
+        } catch (parseError) {
+             console.error(`[Server] Error parsing JSON response for ${toolName}: ${parseError}. Raw body: ${responseBody}`);
+             // Decide how to handle non-JSON success response, maybe return the raw text?
+             // Or throw error if JSON is expected.
+             throw new Error(`Failed to parse JSON response from tool ${toolName}`); 
+        }
+
+    } catch (error) {
+        console.error(`[Server] Error executing tool '${toolName}':`, error);
+        // Re-throw the error so the caller can handle sending the error result back to ElevenLabs
+        throw error; 
     }
 }
 // --- END: Update Tool Execution Function ---
