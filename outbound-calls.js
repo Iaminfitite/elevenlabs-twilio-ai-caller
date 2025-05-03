@@ -229,6 +229,38 @@ export default async function (fastify, opts) {
               elevenLabsWs.send(JSON.stringify(minimalInitialConfig));
               console.log("[!!! Debug EL Setup] Minimal init message sent (without first_message).");
 
+              // --- Add current date calculation ---
+              const today = new Date();
+              const year = today.getFullYear();
+              const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
+              const day = String(today.getDate()).padStart(2, '0');
+              const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+              // ------------------------------------
+
+              const explicitInitialConfig = {
+                  type: "conversation_initiation_client_data",
+                  conversation_config_override: {
+                      // ... existing agent, tts, audio_output config ...
+                      agent: {
+                          prompt: { prompt: agentPrompt }
+                      },
+                      tts: {
+                          voice_id: voiceId
+                      },
+                      audio_output: { 
+                          encoding: "ulaw",
+                          sample_rate: 8000
+                      }
+                  },
+                  // --- Pass current date as a dynamic variable ---
+                  dynamic_variables: { 
+                      "current_date_yyyymmdd": currentDateYYYYMMDD 
+                  }      
+              };
+              console.log(`[!!! Debug EL Setup] Sending explicit init message with current date: ${currentDateYYYYMMDD}`);
+              elevenLabsWs.send(JSON.stringify(explicitInitialConfig));
+              // console.log("[!!! Debug EL Setup] Explicit init message sent."); // Old log
+
               // --- Send Buffered Audio --- 
               if (twilioAudioBuffer.length > 0) {
                 console.log(`[!!! Debug EL Setup] Sending ${twilioAudioBuffer.length} buffered audio chunks...`);
