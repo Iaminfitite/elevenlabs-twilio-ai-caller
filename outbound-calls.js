@@ -223,12 +223,11 @@ export default async function (fastify, opts) {
             try {
               const minimalInitialConfig = {
                   type: "conversation_initiation_client_data",
-                  // Sending empty objects might be enough to trigger initialization
                   conversation_config_override: {}, 
                   dynamic_variables: {}        
               };
               elevenLabsWs.send(JSON.stringify(minimalInitialConfig));
-              console.log("[!!! Debug EL Setup] Minimal init message sent.");
+              console.log("[!!! Debug EL Setup] Minimal init message sent (without first_message).");
 
               // --- Send Buffered Audio --- 
               if (twilioAudioBuffer.length > 0) {
@@ -324,6 +323,41 @@ export default async function (fastify, opts) {
                     `[Twilio] User transcript: ${message.user_transcription_event?.user_transcript}`
                   );
                   break;
+
+                // --- START: Add Tool Call Handling ---
+                case "client_tool_call":
+                  console.log(`[ElevenLabs] Received Tool Call Request:`, JSON.stringify(message.client_tool_call));
+                  const { tool_name, tool_call_id, parameters } = message.client_tool_call;
+                  
+                  // Asynchronously handle the tool execution
+                  handleToolExecution(tool_name, parameters)
+                    .then(result => {
+                        const response = {
+                            type: "client_tool_result",
+                            tool_call_id: tool_call_id,
+                            result: JSON.stringify(result), // Ensure result is stringified
+                            is_error: false
+                        };
+                        console.log(`[ElevenLabs] Sending Tool Result:`, JSON.stringify(response));
+                        if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                            elevenLabsWs.send(JSON.stringify(response));
+                        }
+                    })
+                    .catch(error => {
+                        const response = {
+                            type: "client_tool_result",
+                            tool_call_id: tool_call_id,
+                            result: JSON.stringify({ error: error.message || 'Tool execution failed' }), // Stringify error
+                            is_error: true
+                        };
+                        console.error(`[Server] Error executing tool '${tool_name}':`, error);
+                        console.log(`[ElevenLabs] Sending Tool Error Result:`, JSON.stringify(response));
+                         if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                            elevenLabsWs.send(JSON.stringify(response));
+                        }
+                    });
+                  break;
+                // --- END: Add Tool Call Handling ---
 
                 default:
                   console.log(
@@ -555,3 +589,51 @@ export default async function (fastify, opts) {
     reply.status(500).send({ ok: false, error: 'Internal Server Error' });
   });
 }
+
+// --- START: Update Tool Execution Function ---
+// IMPORTANT: Replace placeholder logic with your actual API calls
+async function handleToolExecution(toolName, parameters) {
+    console.log(`[Server] Attempting to execute tool: ${toolName} with params:`, JSON.stringify(parameters)); // Log params too
+    
+    // Load necessary secrets (even if placeholder doesn't use them yet)
+    const calComApiKey = process.env.CAL_COM_API_KEY;
+    if (!calComApiKey && (toolName === 'book_meeting' || toolName === 'get_available_slots')) {
+        console.error(`[Server] Error: CAL_COM_API_KEY environment variable is not set, but required for tool '${toolName}'`);
+        throw new Error(`Missing required API key for tool '${toolName}'.`);
+    }
+
+    // Simulate an API call delay
+    await new Promise(resolve => setTimeout(resolve, 1000)); 
+
+    // Use tool names from the screenshot
+    if (toolName === 'book_meeting') { 
+        // TODO: Implement your actual booking logic using calComApiKey
+        // Example: const bookingResult = await callCalComBookingApi(calComApiKey, parameters.date, parameters.time, ...);
+        console.log(`[Server] Simulating SUCCESS for tool: ${toolName}`);
+        // Return a structure Cal.com might expect or that your agent prompt expects
+        return { success: true, bookingId: `cal-${Date.now()}`, message: `Booking confirmed for ${parameters?.dateTime || 'selected time'}.` };
+
+    } else if (toolName === 'get_available_slots') { 
+        // TODO: Implement availability check logic using calComApiKey
+        // Example: const slots = await callCalComAvailabilityApi(calComApiKey, parameters.dateRangeStart, ...);
+        console.log(`[Server] Simulating SUCCESS for tool: ${toolName}`);
+        // Return a structure Cal.com might expect or that your agent prompt expects
+        return { availableSlots: ["2024-07-30T10:00:00", "2024-07-30T14:30:00"], message: "Found some available times." };
+
+    } else if (toolName === 'end_call') {
+        // This is marked 'System' in EL dashboard. EL might handle termination.
+        // We'll log it and return success, but might need adjustment based on observed behavior.
+        console.log(`[Server] Received request for System tool: ${toolName}. Assuming ElevenLabs handles call termination.`);
+        // Optionally, you *could* trigger your server-side hangup logic here if needed:
+        // if (callSid) { 
+        //     try { await twilioClient.calls(callSid).update({ status: "completed" }); } catch(e){ console.error('Error ending call via tool:', e); }
+        // }
+        return { success: true, message: "Call end request acknowledged." };
+        
+    } else {
+        // Handle unknown tools
+        console.warn(`[Server] Unknown tool requested: ${toolName}`);
+        throw new Error(`Tool '${toolName}' is not implemented.`);
+    }
+}
+// --- END: Update Tool Execution Function ---
