@@ -569,7 +569,14 @@ export default async function (fastify, opts) {
 
 async function handleToolExecution(toolName, parameters) {
     const executionStartTime = Date.now();
-    console.log(`[Server @ ${executionStartTime}] Attempting tool: ${toolName} with params:`, JSON.stringify(parameters));
+    // Log raw parameters for the specific tool
+    if (toolName === 'get_available_slots') {
+        console.log(`[Date Debug] get_available_slots - Received RAW params from LLM: ${JSON.stringify(parameters)}`);
+        const todayForDebug = new Date();
+        console.log(`[Date Debug] Server's current date for reference: ${todayForDebug.toISOString().split('T')[0]}`);
+    } else {
+        console.log(`[Server @ ${executionStartTime}] Attempting tool: ${toolName} with params:`, JSON.stringify(parameters));
+    }
 
     const calComApiKey = process.env.CAL_COM_API_KEY;
     if (!calComApiKey) {
@@ -600,43 +607,42 @@ async function handleToolExecution(toolName, parameters) {
 
             const calComParams = {};
 
-            if (parameters.eventTypeId) {
-                calComParams.eventTypeId = parameters.eventTypeId;
-            } else {
-                 console.error("[Server] Missing required 'eventTypeId' from LLM. Parameters:", JSON.stringify(parameters));
+            if (!parameters.eventTypeId) {
+                 console.error("[Server] get_available_slots - Missing 'eventTypeId' from LLM. Parameters:", JSON.stringify(parameters));
                  throw new Error("Missing required 'eventTypeId' parameter from LLM for get_available_slots.");
             }
+            calComParams.eventTypeId = parameters.eventTypeId;
 
+            // Validate and use the start date from LLM
             if (parameters.start && /^\d{4}-\d{2}-\d{2}$/.test(parameters.start)) {
                 calComParams.start = parameters.start;
-                console.log(`[Server] Using start date from LLM: ${calComParams.start}`);
-
-                if (parameters.end && /^\d{4}-\d{2}-\d{2}$/.test(parameters.end)) {
-                    calComParams.end = parameters.end;
-                     console.log(`[Server] Using end date from LLM: ${calComParams.end}`);
-                } else {
-                    calComParams.end = calComParams.start; 
-                    console.log(`[Server] Defaulting end date to start date: ${calComParams.end}`);
-                }
-
+                console.log(`[Date Debug] get_available_slots - Using start date from LLM: ${calComParams.start}`);
             } else {
-                 console.error("[Server] Missing or invalid 'start' date (YYYY-MM-DD) from LLM. Parameters:", JSON.stringify(parameters));
-                 throw new Error("Missing or invalid 'start' date parameter (YYYY-MM-DD) from LLM.");
+                 console.error(`[Server] get_available_slots - Missing or invalid 'start' date (YYYY-MM-DD) from LLM. Received: '${parameters.start}'. Params:`, JSON.stringify(parameters));
+                 throw new Error(`Missing or invalid 'start' date (YYYY-MM-DD) from LLM. Received: '${parameters.start}'`);
             }
-            
+
+            // Validate and use the end date from LLM, or default
+            if (parameters.end && /^\d{4}-\d{2}-\d{2}$/.test(parameters.end)) {
+                calComParams.end = parameters.end;
+                 console.log(`[Date Debug] get_available_slots - Using end date from LLM: ${calComParams.end}`);
+            } else {
+                // Default end date to be same as start if not provided or invalid
+                calComParams.end = calComParams.start;
+                console.log(`[Date Debug] get_available_slots - Defaulting end date to start date: ${calComParams.end}. (Original 'end' from LLM: '${parameters.end}')`);
+            }
+
+            // Use timezone from LLM if provided and valid, otherwise default
             if (parameters.timeZone && /^[a-zA-Z_]+\/[a-zA-Z_]+$/.test(parameters.timeZone)) {
                 calComParams.timeZone = parameters.timeZone;
-                 console.log(`[Server] Using timeZone from LLM: ${calComParams.timeZone}`);
             } else {
-                calComParams.timeZone = 'Australia/Brisbane';
-                console.log(`[Server] Defaulting timeZone to: ${calComParams.timeZone}`);
+                calComParams.timeZone = 'Australia/Brisbane'; // Default timezone
+                console.log(`[Date Debug] get_available_slots - Defaulting timeZone to: ${calComParams.timeZone}. (Original 'timeZone' from LLM: '${parameters.timeZone}')`);
             }
-
+            console.log(`[Date Debug] get_available_slots - Final Cal.com query params: ${JSON.stringify(calComParams)}`);
             const queryParams = new URLSearchParams(calComParams).toString();
-
             url = `https://api.cal.com/v2/slots?${queryParams}`;
             console.log(`[Server] Calling ${options.method} ${url}`);
-
 
         } else if (toolName === 'end_call') {
             console.log(`[Server] Received request for System tool: ${toolName}.`);
