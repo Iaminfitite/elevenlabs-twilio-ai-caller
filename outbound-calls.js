@@ -509,12 +509,13 @@ export default async function (fastify, opts) {
             case "media":
               // --- Add Log H: Media event received, before check --- 
               console.log("[!!! Debug Media] Media received from Twilio. Checking EL WS state...");
-              const audioPayloadBase64 = Buffer.from(msg.media.payload, "base64").toString("base64");
+              const audioPayloadBase64 = msg.media.payload; // Directly use the payload
               
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                 // --- Add Log I: Attempting to send audio to EL --- 
                 console.log("[!!! Debug Media] EL WS is OPEN. Attempting to forward audio...");
                 try {
+                  // Use the direct payload here
                   const audioMessage = { user_audio_chunk: audioPayloadBase64 };
                   elevenLabsWs.send(JSON.stringify(audioMessage));
                 } catch (mediaSendError) {
@@ -523,6 +524,7 @@ export default async function (fastify, opts) {
               } else {
                  // --- Buffer the audio if WS not open yet ---
                  console.log("[!!! Debug Media] EL WS is NOT OPEN. Buffering audio chunk.");
+                 // Use the direct payload here too
                  twilioAudioBuffer.push(audioPayloadBase64);
               }
               break;
