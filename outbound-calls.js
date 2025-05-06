@@ -199,21 +199,27 @@ export default async function (fastify, opts) {
       const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
       let isElevenLabsWsOpen = false;
       let twilioAudioBuffer = []; // <-- Add buffer array
+      let setupStartTime = null; // <--- Add timing variable
 
       ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
       const setupElevenLabs = async () => {
-        try {
-          // --- Add Log A: Before getting signed URL ---
-          console.log("[!!! Debug EL Setup] Attempting to get signed URL...");
+        // --- Add Log A: Before getting signed URL ---
+        setupStartTime = Date.now(); // <--- Start timing
+        console.log(`[!!! Debug EL Setup @ ${setupStartTime}] Attempting to get signed URL...`);
+        try { // <--- Wrap the whole setup in a try-catch
+          const signedUrlStartTime = Date.now();
           const signedUrl = await getSignedUrl();
-          // --- Add Log B: After getting signed URL ---
-          console.log("[!!! Debug EL Setup] Got signed URL. Attempting WebSocket connection...");
+          const signedUrlEndTime = Date.now();
+          console.log(`[!!! Debug EL Setup] Got signed URL in ${signedUrlEndTime - signedUrlStartTime}ms. Attempting WebSocket connection...`);
+
+          const wsConnectStartTime = Date.now();
           elevenLabsWs = new WebSocket(signedUrl);
 
           elevenLabsWs.on("open", () => {
+            const wsConnectEndTime = Date.now();
             // --- Add Log C: ElevenLabs WS Open ---
-            console.log("[!!! Debug EL Setup] ElevenLabs WebSocket OPENED.");
+            console.log(`[!!! Debug EL Setup] ElevenLabs WebSocket OPENED in ${wsConnectEndTime - wsConnectStartTime}ms (Total setup time: ${wsConnectEndTime - setupStartTime}ms).`);
             console.log("[ElevenLabs] Connected to Conversational AI"); // Keep original log too
             isElevenLabsWsOpen = true;
             if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen(); // Signal that WS is open
@@ -410,13 +416,16 @@ export default async function (fastify, opts) {
             console.log(`[!!! Debug EL Setup] ElevenLabs WebSocket CLOSED. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
             isElevenLabsWsOpen = false;
           });
-        } catch (error) {
+        } catch (error) { // <--- Catch errors during setup
+          const setupEndTime = Date.now();
           // --- Add Log G: Error during setupElevenLabs ---
-          console.error("[!!! Debug EL Setup] Error in setupElevenLabs function:", error);
+          console.error(`[!!! Debug EL Setup] Error in setupElevenLabs function after ${setupEndTime - setupStartTime}ms:`, error);
+          // Optionally close the Twilio WS connection if EL setup fails critically
+          // ws.close(1011, "ElevenLabs setup failed"); 
         }
       };
 
-      setupElevenLabs();
+      setupElevenLabs(); // Call setup immediately when Twilio connects
 
       ws.on("message", async (message) => {
         try {
@@ -626,7 +635,8 @@ export default async function (fastify, opts) {
 
 // --- START: Update Tool Execution Function to Call Webhooks ---
 async function handleToolExecution(toolName, parameters) {
-    console.log(`[Server] Attempting to execute tool: ${toolName} with params:`, JSON.stringify(parameters));
+    const executionStartTime = Date.now(); // <--- Timing start
+    console.log(`[Server @ ${executionStartTime}] Attempting tool: ${toolName} with params:`, JSON.stringify(parameters));
 
     const calComApiKey = process.env.CAL_COM_API_KEY;
     if (!calComApiKey) {
@@ -636,10 +646,10 @@ async function handleToolExecution(toolName, parameters) {
 
     let url;
     let options = {
+        // Add a timeout (e.g., 10 seconds)
+        signal: AbortSignal.timeout(10000), // <--- Add AbortSignal for timeout
         headers: {
-            // Note: Authorization format might need adjustment (e.g., 'Bearer ' or specific Cal.com format)
-            // Assuming direct API key usage for now based on EL config, but check Cal.com docs.
-            'Authorization': `ApiKey ${calComApiKey}`, // Common pattern, adjust if needed 
+            'Authorization': `ApiKey ${calComApiKey}`, 
             'Content-Type': 'application/json' 
         }
     };
@@ -648,54 +658,57 @@ async function handleToolExecution(toolName, parameters) {
         if (toolName === 'book_meeting') {
             url = 'https://api.cal.com/v2/bookings';
             options.method = 'POST';
-            options.headers['cal-api-version'] = '2024-08-13'; // From screenshot
-            options.body = JSON.stringify(parameters); // Send EL params as body
-            
+            options.headers['cal-api-version'] = '2024-08-13';
+            options.body = JSON.stringify(parameters); 
             console.log(`[Server] Calling ${options.method} ${url} with body:`, options.body);
 
         } else if (toolName === 'get_available_slots') {
-            // For GET requests, parameters usually go into the URL query string
             const queryParams = new URLSearchParams(parameters).toString();
             url = `https://api.cal.com/v2/slots?${queryParams}`;
             options.method = 'GET';
-            options.headers['cal-api-version'] = '2024-09-04'; // From screenshot
+            options.headers['cal-api-version'] = '2024-09-04';
             // No body for GET requests
-            
             console.log(`[Server] Calling ${options.method} ${url}`);
 
         } else if (toolName === 'end_call') {
             console.log(`[Server] Received request for System tool: ${toolName}.`);
-            // Returning success, assuming EL or other logic handles termination
             return { success: true, message: "Call end request acknowledged." };
         } else {
             console.warn(`[Server] Unknown tool requested: ${toolName}`);
             throw new Error(`Tool '${toolName}' is not implemented.`);
         }
 
+        const fetchStartTime = Date.now();
         const response = await fetch(url, options);
+        const fetchEndTime = Date.now();
         const responseBody = await response.text(); // Read body first for better error logging
+        const responseParseTime = Date.now();
 
-        console.log(`[Server] Received response from ${url}: Status=${response.status}, Body=${responseBody}`);
+        console.log(`[Server] API Response: Status=${response.status}, FetchTime=${fetchEndTime - fetchStartTime}ms, BodyReadTime=${responseParseTime - fetchEndTime}ms, Body=${responseBody}`);
 
         if (!response.ok) {
-            throw new Error(`API call failed with status ${response.status}: ${responseBody}`);
+            // Throw detailed error including status and body
+            throw new Error(`API call to ${url} failed with status ${response.status}: ${responseBody}`);
         }
         
-        // Attempt to parse JSON, handle potential errors if body isn't valid JSON
         try {
             const jsonResult = JSON.parse(responseBody);
-            console.log(`[Server] Successfully executed tool: ${toolName}`);
-            return jsonResult; // Return the actual JSON response from Cal.com
+            const executionEndTime = Date.now();
+            console.log(`[Server] Success tool: ${toolName}. Total Execution Time: ${executionEndTime - executionStartTime}ms`);
+            return jsonResult; 
         } catch (parseError) {
              console.error(`[Server] Error parsing JSON response for ${toolName}: ${parseError}. Raw body: ${responseBody}`);
-             // Decide how to handle non-JSON success response, maybe return the raw text?
-             // Or throw error if JSON is expected.
              throw new Error(`Failed to parse JSON response from tool ${toolName}`); 
         }
 
     } catch (error) {
-        console.error(`[Server] Error executing tool '${toolName}':`, error);
-        // Re-throw the error so the caller can handle sending the error result back to ElevenLabs
+        const executionEndTime = Date.now();
+        console.error(`[Server] Error executing tool '${toolName}' after ${executionEndTime - executionStartTime}ms:`, error);
+        // Check if it's a timeout error specifically
+        if (error.name === 'TimeoutError') {
+             throw new Error(`API call to ${toolName} timed out after 10 seconds.`);
+        }
+        // Re-throw the original or enhanced error
         throw error; 
     }
 }
