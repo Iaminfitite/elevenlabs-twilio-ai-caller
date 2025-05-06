@@ -192,341 +192,356 @@ export default async function (fastify, opts) {
     "/outbound-media-stream",
     { websocket: true },
     (ws, req) => {
-      console.log("[!!! WS Handler Entered] Connection attempt received."); 
-      
-      let streamSid = null, callSid = null, elevenLabsWs = null, callCustomParameters = null;
-      let resolveElevenLabsWsOpen = null;
-      const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
-      let isElevenLabsWsOpen = false;
-      let twilioAudioBuffer = [];
-      let setupStartTime = null;
+      // --- Wrap handler logic in try-catch ---
+      try {
+        console.log("[!!! WS Handler Entered] Connection attempt received."); 
+        
+        let streamSid = null, callSid = null, elevenLabsWs = null, callCustomParameters = null;
+        let resolveElevenLabsWsOpen = null;
+        const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
+        let isElevenLabsWsOpen = false;
+        let twilioAudioBuffer = [];
+        let setupStartTime = null; // We keep this for inside setupElevenLabs
 
-      ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
+        ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
-      const setupElevenLabs = async () => {
-        console.log(`[!!! EL Setup @ ${Date.now()}] Attempting in ${__filename}`);
-        try {
-          const signedUrlStartTime = Date.now();
-          console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
-          const signedUrl = await getSignedUrl();
-          const signedUrlEndTime = Date.now();
-          if (!signedUrl) {
-              console.error(`[!!! EL Setup @ ${signedUrlEndTime}] FAILED to get signed URL. Elapsed: ${signedUrlEndTime - signedUrlStartTime}ms.`);
-              return;
-          }
-          console.log(`[!!! EL Setup @ ${signedUrlEndTime}] Got signed URL in ${signedUrlEndTime - signedUrlStartTime}ms. Attempting WebSocket connection to: ${signedUrl.split('?')[0]}...`);
-
-          const wsConnectStartTime = Date.now();
-          elevenLabsWs = new WebSocket(signedUrl);
-
-          elevenLabsWs.on("open", () => {
-            const wsConnectEndTime = Date.now();
-            console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket OPENED in ${wsConnectEndTime - wsConnectStartTime}ms.`);
-            isElevenLabsWsOpen = true;
-            if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
-
-            const today = new Date();
-            const year = today.getFullYear();
-            const month = String(today.getMonth() + 1).padStart(2, '0');
-            const day = String(today.getDate()).padStart(2, '0');
-            const currentDateYYYYMMDD = `${year}-${month}-${day}`;
-
-            const initialConfig = {
-              type: "conversation_initiation_client_data",
-              dynamic_variables: {
-                "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
-              }
-            };
-            console.log(`[!!! EL Setup @ ${Date.now()}] Preparing to send initialConfig with date: ${currentDateYYYYMMDD}`);
-            try {
-              elevenLabsWs.send(JSON.stringify(initialConfig));
-              console.log(`[!!! EL Setup @ ${Date.now()}] Successfully SENT initialConfig.`);
-            } catch (sendError) {
-              console.error(`[!!! EL Setup @ ${Date.now()}] FAILED to send initialConfig:`, sendError);
+        const setupElevenLabs = async () => {
+          console.log(`[!!! EL Setup @ ${Date.now()}] Attempting in ${__filename}`);
+          try {
+            const signedUrlStartTime = Date.now();
+            console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
+            const signedUrl = await getSignedUrl();
+            const signedUrlEndTime = Date.now();
+            if (!signedUrl) {
+                console.error(`[!!! EL Setup @ ${signedUrlEndTime}] FAILED to get signed URL. Elapsed: ${signedUrlEndTime - signedUrlStartTime}ms.`);
+                return;
             }
+            console.log(`[!!! EL Setup @ ${signedUrlEndTime}] Got signed URL in ${signedUrlEndTime - signedUrlStartTime}ms. Attempting WebSocket connection to: ${signedUrl.split('?')[0]}...`);
 
-            if (twilioAudioBuffer.length > 0) {
-              console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Attempting to send...`);
-              twilioAudioBuffer.forEach((audioChunk, index) => {
-                try {
-                  const audioMessage = { user_audio_chunk: audioChunk };
-                  elevenLabsWs.send(JSON.stringify(audioMessage));
-                  if (index === twilioAudioBuffer.length - 1) {
-                      console.log("[!!! Debug EL Setup] Finished sending buffered audio.");
-                  }
-                } catch (bufferSendError) {
-                  console.error(`[!!! Debug EL Setup] Error sending buffered audio chunk #${index}:`, bufferSendError);
+            const wsConnectStartTime = Date.now();
+            elevenLabsWs = new WebSocket(signedUrl);
+
+            elevenLabsWs.on("open", () => {
+              const wsConnectEndTime = Date.now();
+              console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket OPENED in ${wsConnectEndTime - wsConnectStartTime}ms.`);
+              isElevenLabsWsOpen = true;
+              if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
+
+              const today = new Date();
+              const year = today.getFullYear();
+              const month = String(today.getMonth() + 1).padStart(2, '0');
+              const day = String(today.getDate()).padStart(2, '0');
+              const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+
+              const initialConfig = {
+                type: "conversation_initiation_client_data",
+                dynamic_variables: {
+                  "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
                 }
-              });
-              twilioAudioBuffer = [];
-            } else {
-                console.log("[!!! Debug EL Setup] EL WS Open: No buffered audio chunks to send.");
-            }
-          });
+              };
+              console.log(`[!!! EL Setup @ ${Date.now()}] Preparing to send initialConfig with date: ${currentDateYYYYMMDD}`);
+              try {
+                elevenLabsWs.send(JSON.stringify(initialConfig));
+                console.log(`[!!! EL Setup @ ${Date.now()}] Successfully SENT initialConfig.`);
+              } catch (sendError) {
+                console.error(`[!!! EL Setup @ ${Date.now()}] FAILED to send initialConfig:`, sendError);
+              }
 
-          elevenLabsWs.on("message", (data) => {
-            try {
-              const message = JSON.parse(data);
+              if (twilioAudioBuffer.length > 0) {
+                console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Attempting to send...`);
+                twilioAudioBuffer.forEach((audioChunk, index) => {
+                  try {
+                    const audioMessage = { user_audio_chunk: audioChunk };
+                    elevenLabsWs.send(JSON.stringify(audioMessage));
+                    if (index === twilioAudioBuffer.length - 1) {
+                        console.log("[!!! Debug EL Setup] Finished sending buffered audio.");
+                    }
+                  } catch (bufferSendError) {
+                    console.error(`[!!! Debug EL Setup] Error sending buffered audio chunk #${index}:`, bufferSendError);
+                  }
+                });
+                twilioAudioBuffer = [];
+              } else {
+                  console.log("[!!! Debug EL Setup] EL WS Open: No buffered audio chunks to send.");
+              }
+            });
 
-              switch (message.type) {
-                case "conversation_initiation_metadata":
-                  console.log("[ElevenLabs] Received initiation metadata");
-                  break;
+            elevenLabsWs.on("message", (data) => {
+              try {
+                const message = JSON.parse(data);
 
-                case "audio":
-                  if (streamSid) {
-                    if (message.audio?.chunk) {
-                      const audioData = {
-                        event: "media",
-                        streamSid,
-                        media: {
-                          payload: message.audio.chunk,
-                        },
-                      };
-                      ws.send(JSON.stringify(audioData));
-                    } else if (message.audio_event?.audio_base_64) {
-                      const audioData = {
-                        event: "media",
-                        streamSid,
-                        media: {
-                          payload: message.audio_event.audio_base_64,
-                        },
-                      };
-                      ws.send(JSON.stringify(audioData));
+                switch (message.type) {
+                  case "conversation_initiation_metadata":
+                    console.log("[ElevenLabs] Received initiation metadata");
+                    break;
+
+                  case "audio":
+                    if (streamSid) {
+                      if (message.audio?.chunk) {
+                        const audioData = {
+                          event: "media",
+                          streamSid,
+                          media: {
+                            payload: message.audio.chunk,
+                          },
+                        };
+                        ws.send(JSON.stringify(audioData));
+                      } else if (message.audio_event?.audio_base_64) {
+                        const audioData = {
+                          event: "media",
+                          streamSid,
+                          media: {
+                            payload: message.audio_event.audio_base_64,
+                          },
+                        };
+                        ws.send(JSON.stringify(audioData));
+                      }
+                    } else {
+                      console.log(
+                        "[ElevenLabs] Received audio but no StreamSid yet"
+                      );
+                    }
+                    break;
+
+                  case "interruption":
+                    if (streamSid) {
+                      ws.send(
+                        JSON.stringify({
+                          event: "clear",
+                          streamSid,
+                        })
+                      );
+                    }
+                    break;
+
+                  case "ping":
+                    if (message.ping_event?.event_id) {
+                      elevenLabsWs.send(
+                        JSON.stringify({
+                          type: "pong",
+                          event_id: message.ping_event.event_id,
+                        })
+                      );
+                    }
+                    break;
+
+                  case "agent_response":
+                    console.log(
+                      `[Twilio] Agent response: ${message.agent_response_event?.agent_response}`
+                    );
+                    break;
+
+                  case "user_transcript":
+                    console.log(
+                      `[Twilio] User transcript: ${message.user_transcription_event?.user_transcript}`
+                    );
+                    break;
+
+                  case "client_tool_call":
+                    console.log(`[!!! Debug Tool Call] Received RAW client_tool_call from EL:`, JSON.stringify(message));
+                    
+                    const { tool_name, tool_call_id, parameters } = message.client_tool_call;
+                    
+                    handleToolExecution(tool_name, parameters)
+                      .then(result => {
+                          const response = {
+                              type: "client_tool_result",
+                              tool_call_id: tool_call_id,
+                              result: JSON.stringify(result),
+                              is_error: false
+                          };
+                          console.log(`[ElevenLabs] Sending Tool Result:`, JSON.stringify(response));
+                          if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                              elevenLabsWs.send(JSON.stringify(response));
+                          }
+                      })
+                      .catch(error => {
+                          const response = {
+                              type: "client_tool_result",
+                              tool_call_id: tool_call_id,
+                              result: JSON.stringify({ error: error.message || 'Tool execution failed' }),
+                              is_error: true
+                          };
+                          console.error(`[Server] Error executing tool '${tool_name}':`, error);
+                          console.log(`[ElevenLabs] Sending Tool Error Result:`, JSON.stringify(response));
+                           if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                              elevenLabsWs.send(JSON.stringify(response));
+                          }
+                      });
+                    break;
+
+                  default:
+                    console.log(
+                      `[ElevenLabs] Unhandled message type: ${message.type}`
+                    );
+                }
+              } catch (error) {
+                console.error("[ElevenLabs] Error processing message:", error);
+              }
+            });
+
+            elevenLabsWs.on("error", (error) => {
+               console.error(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket ERROR:`, error);
+            });
+            elevenLabsWs.on("close", (code, reason) => {
+              const reasonStr = reason ? reason.toString() : 'N/A';
+              console.log(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket CLOSED. Code: ${code}, Reason: ${reasonStr}`);
+              isElevenLabsWsOpen = false;
+            });
+          } catch (error) {
+            console.error(`[!!! EL Setup @ ${Date.now()}] CRITICAL error in setupElevenLabs function:`, error);
+          }
+        };
+
+        // --- Log before calling setupElevenLabs ---
+        console.log(`[!!! WS Handler @ ${Date.now()}] Attempting to call setupElevenLabs...`);
+        setupElevenLabs();
+        // --- Log after calling setupElevenLabs (Note: async function call returns immediately) ---
+        console.log(`[!!! WS Handler @ ${Date.now()}] Call to setupElevenLabs initiated (runs asynchronously).`);
+
+        ws.on("message", async (message) => {
+          try {
+            const msg = JSON.parse(message);
+            if (msg.event !== "media") console.log(`[Twilio] Event: ${msg.event}`);
+
+            switch (msg.event) {
+              case "start":
+                console.log("[!!! Debug Start Event] Received raw start message:", JSON.stringify(msg));
+                
+                streamSid = msg.start.streamSid;
+                callSid = msg.start.callSid;
+                console.log(`[Twilio] Stream started: ${streamSid}, CallSid: ${callSid}`);
+                
+                callCustomParameters = {}; 
+                let isVoicemail = false;
+                let amdResult = 'unknown';
+
+                try {
+                  console.log("[!!! Debug Start Event] Attempting parameter extraction...");
+                  const paramsObjectFromTwilio = msg.start.customParameters;
+                  let base64ParamString = '';
+                  if (typeof paramsObjectFromTwilio === 'object' && paramsObjectFromTwilio !== null && typeof paramsObjectFromTwilio.customParameters === 'string') {
+                      base64ParamString = paramsObjectFromTwilio.customParameters;
+                  } else if (typeof paramsObjectFromTwilio === 'string') {
+                      base64ParamString = paramsObjectFromTwilio;
+                  }
+                  
+                  if (base64ParamString) { 
+                      try {
+                          const decodedParametersString = Buffer.from(base64ParamString, 'base64').toString('utf-8');
+                           if (decodedParametersString) { 
+                             try {
+                                  console.log("[!!! Debug Start Event] Attempting JSON parse of decoded params...");
+                                  callCustomParameters = JSON.parse(decodedParametersString);
+                                  console.log("[Twilio] Successfully parsed custom parameters:", callCustomParameters);
+                             } catch (parseError) {
+                                 console.error("[Twilio] JSON Parse Error:", parseError, "| String:", JSON.stringify(decodedParametersString));
+                             }
+                           }
+                      } catch (bufferError) {
+                          console.error("[Twilio] Buffer.from or toString Error:", bufferError);
+                      }
+                  } else {
+                    console.warn("[Twilio] base64ParamString is empty, skipping decode/parse.");
+                  }
+                   console.log("[!!! Debug Start Event] Checking AMD result...");
+                  if (callSid && amdResults[callSid]) {
+                      const answeredBy = amdResults[callSid];
+                      amdResult = answeredBy;
+                      console.log(`[AMD Check] Result for ${callSid}: ${answeredBy}`);
+                      if (answeredBy === "machine_start" || answeredBy === "machine_end_beep" || answeredBy === "fax") {
+                           isVoicemail = true;
+                           console.log(`[AMD Check] Voicemail/Machine detected for ${callSid}`);
+                      }
+                      delete amdResults[callSid];
+                  } else {
+                      console.log(`[AMD Check] No AMD result found for ${callSid} after wait.`);
+                  }
+
+                  console.log("[!!! Debug Start Event] Checking ElevenLabs WS state...");
+                  if (!isElevenLabsWsOpen) {
+                      console.log("[ElevenLabs] Waiting for WebSocket connection to open...");
+                      await Promise.race([
+                          elevenLabsWsOpenPromise,
+                          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for ElevenLabs WS open")), 5000))
+                      ]);
+                  }
+                  
+                  console.log("[!!! Debug Start Event] Finished processing start event logic (sendInitialConfig SKIPPED).");
+
+                } catch (error) {
+                  console.error("[!!! Twilio Error processing start event]:", error);
+                }
+                break;
+
+              case "media":
+                console.log("[!!! Debug Media] Media received from Twilio. Checking EL WS state...");
+                const audioPayloadBase64 = msg.media.payload;
+                
+                if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                  console.log("[!!! Debug Media] EL WS is OPEN. Attempting to forward audio...");
+                  try {
+                    const audioMessage = { user_audio_chunk: audioPayloadBase64 };
+                    elevenLabsWs.send(JSON.stringify(audioMessage));
+                  } catch (mediaSendError) {
+                     console.error("[!!! Debug Media] Error sending live audio chunk:", mediaSendError);
+                  }
+                } else {
+                   console.log("[!!! Debug Media] EL WS is NOT OPEN. Buffering audio chunk.");
+                   twilioAudioBuffer.push(audioPayloadBase64);
+                }
+                break;
+
+              case "stop":
+                console.log(`[Twilio] Received stop event for Stream ${streamSid}`);
+                try {
+                  if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                    console.log("[ElevenLabs] Closing WS connection due to Twilio stop event.");
+                    elevenLabsWs.close();
+                  }
+                  
+                  if (callSid) {
+                    try {
+                        console.log(`[Twilio] Attempting to update call ${callSid} status to completed...`);
+                        await twilioClient.calls(callSid).update({ status: "completed" });
+                        console.log(`[Twilio] Successfully sent command to update call ${callSid}`);
+                    } catch (callUpdateError) {
+                        console.error(`[!!! Twilio Call Update Error] Failed for CallSid ${callSid}:`, callUpdateError);
                     }
                   } else {
-                    console.log(
-                      "[ElevenLabs] Received audio but no StreamSid yet"
-                    );
+                     console.warn("[Twilio] Cannot update call on stop event: callSid is missing.");
                   }
-                  break;
+                } catch (error) {
+                   console.error("[!!! Twilio Stop Event General Error]:", error);
+                }
+                console.log(`[Twilio] Finished processing stop event for Stream ${streamSid}`);
+                break;
 
-                case "interruption":
-                  if (streamSid) {
-                    ws.send(
-                      JSON.stringify({
-                        event: "clear",
-                        streamSid,
-                      })
-                    );
-                  }
-                  break;
-
-                case "ping":
-                  if (message.ping_event?.event_id) {
-                    elevenLabsWs.send(
-                      JSON.stringify({
-                        type: "pong",
-                        event_id: message.ping_event.event_id,
-                      })
-                    );
-                  }
-                  break;
-
-                case "agent_response":
-                  console.log(
-                    `[Twilio] Agent response: ${message.agent_response_event?.agent_response}`
-                  );
-                  break;
-
-                case "user_transcript":
-                  console.log(
-                    `[Twilio] User transcript: ${message.user_transcription_event?.user_transcript}`
-                  );
-                  break;
-
-                case "client_tool_call":
-                  console.log(`[!!! Debug Tool Call] Received RAW client_tool_call from EL:`, JSON.stringify(message));
-                  
-                  const { tool_name, tool_call_id, parameters } = message.client_tool_call;
-                  
-                  handleToolExecution(tool_name, parameters)
-                    .then(result => {
-                        const response = {
-                            type: "client_tool_result",
-                            tool_call_id: tool_call_id,
-                            result: JSON.stringify(result),
-                            is_error: false
-                        };
-                        console.log(`[ElevenLabs] Sending Tool Result:`, JSON.stringify(response));
-                        if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                            elevenLabsWs.send(JSON.stringify(response));
-                        }
-                    })
-                    .catch(error => {
-                        const response = {
-                            type: "client_tool_result",
-                            tool_call_id: tool_call_id,
-                            result: JSON.stringify({ error: error.message || 'Tool execution failed' }),
-                            is_error: true
-                        };
-                        console.error(`[Server] Error executing tool '${tool_name}':`, error);
-                        console.log(`[ElevenLabs] Sending Tool Error Result:`, JSON.stringify(response));
-                         if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                            elevenLabsWs.send(JSON.stringify(response));
-                        }
-                    });
-                  break;
-
-                default:
-                  console.log(
-                    `[ElevenLabs] Unhandled message type: ${message.type}`
-                  );
-              }
-            } catch (error) {
-              console.error("[ElevenLabs] Error processing message:", error);
+              default:
+                console.log(`[Twilio] Unhandled event: ${msg.event}`);
             }
-          });
-
-          elevenLabsWs.on("error", (error) => {
-             console.error(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket ERROR:`, error);
-          });
-          elevenLabsWs.on("close", (code, reason) => {
-            const reasonStr = reason ? reason.toString() : 'N/A';
-            console.log(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket CLOSED. Code: ${code}, Reason: ${reasonStr}`);
-            isElevenLabsWsOpen = false;
-          });
-        } catch (error) {
-          console.error(`[!!! EL Setup @ ${Date.now()}] CRITICAL error in setupElevenLabs function:`, error);
-        }
-      };
-
-      setupElevenLabs();
-
-      ws.on("message", async (message) => {
-        try {
-          const msg = JSON.parse(message);
-          if (msg.event !== "media") console.log(`[Twilio] Event: ${msg.event}`);
-
-          switch (msg.event) {
-            case "start":
-              console.log("[!!! Debug Start Event] Received raw start message:", JSON.stringify(msg));
-              
-              streamSid = msg.start.streamSid;
-              callSid = msg.start.callSid;
-              console.log(`[Twilio] Stream started: ${streamSid}, CallSid: ${callSid}`);
-              
-              callCustomParameters = {}; 
-              let isVoicemail = false;
-              let amdResult = 'unknown';
-
-              try {
-                console.log("[!!! Debug Start Event] Attempting parameter extraction...");
-                const paramsObjectFromTwilio = msg.start.customParameters;
-                let base64ParamString = '';
-                if (typeof paramsObjectFromTwilio === 'object' && paramsObjectFromTwilio !== null && typeof paramsObjectFromTwilio.customParameters === 'string') {
-                    base64ParamString = paramsObjectFromTwilio.customParameters;
-                } else if (typeof paramsObjectFromTwilio === 'string') {
-                    base64ParamString = paramsObjectFromTwilio;
-                }
-                
-                if (base64ParamString) { 
-                    try {
-                        const decodedParametersString = Buffer.from(base64ParamString, 'base64').toString('utf-8');
-                         if (decodedParametersString) { 
-                           try {
-                                console.log("[!!! Debug Start Event] Attempting JSON parse of decoded params...");
-                                callCustomParameters = JSON.parse(decodedParametersString);
-                                console.log("[Twilio] Successfully parsed custom parameters:", callCustomParameters);
-                           } catch (parseError) {
-                               console.error("[Twilio] JSON Parse Error:", parseError, "| String:", JSON.stringify(decodedParametersString));
-                           }
-                         }
-                    } catch (bufferError) {
-                        console.error("[Twilio] Buffer.from or toString Error:", bufferError);
-                    }
-                } else {
-                  console.warn("[Twilio] base64ParamString is empty, skipping decode/parse.");
-                }
-                 console.log("[!!! Debug Start Event] Checking AMD result...");
-                if (callSid && amdResults[callSid]) {
-                    const answeredBy = amdResults[callSid];
-                    amdResult = answeredBy;
-                    console.log(`[AMD Check] Result for ${callSid}: ${answeredBy}`);
-                    if (answeredBy === "machine_start" || answeredBy === "machine_end_beep" || answeredBy === "fax") {
-                         isVoicemail = true;
-                         console.log(`[AMD Check] Voicemail/Machine detected for ${callSid}`);
-                    }
-                    delete amdResults[callSid];
-                } else {
-                    console.log(`[AMD Check] No AMD result found for ${callSid} after wait.`);
-                }
-
-                console.log("[!!! Debug Start Event] Checking ElevenLabs WS state...");
-                if (!isElevenLabsWsOpen) {
-                    console.log("[ElevenLabs] Waiting for WebSocket connection to open...");
-                    await Promise.race([
-                        elevenLabsWsOpenPromise,
-                        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for ElevenLabs WS open")), 5000))
-                    ]);
-                }
-                
-                console.log("[!!! Debug Start Event] Finished processing start event logic (sendInitialConfig SKIPPED).");
-
-              } catch (error) {
-                console.error("[!!! Twilio Error processing start event]:", error);
-              }
-              break;
-
-            case "media":
-              console.log("[!!! Debug Media] Media received from Twilio. Checking EL WS state...");
-              const audioPayloadBase64 = msg.media.payload;
-              
-              if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                console.log("[!!! Debug Media] EL WS is OPEN. Attempting to forward audio...");
-                try {
-                  const audioMessage = { user_audio_chunk: audioPayloadBase64 };
-                  elevenLabsWs.send(JSON.stringify(audioMessage));
-                } catch (mediaSendError) {
-                   console.error("[!!! Debug Media] Error sending live audio chunk:", mediaSendError);
-                }
-              } else {
-                 console.log("[!!! Debug Media] EL WS is NOT OPEN. Buffering audio chunk.");
-                 twilioAudioBuffer.push(audioPayloadBase64);
-              }
-              break;
-
-            case "stop":
-              console.log(`[Twilio] Received stop event for Stream ${streamSid}`);
-              try {
-                if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                  console.log("[ElevenLabs] Closing WS connection due to Twilio stop event.");
-                  elevenLabsWs.close();
-                }
-                
-                if (callSid) {
-                  try {
-                      console.log(`[Twilio] Attempting to update call ${callSid} status to completed...`);
-                      await twilioClient.calls(callSid).update({ status: "completed" });
-                      console.log(`[Twilio] Successfully sent command to update call ${callSid}`);
-                  } catch (callUpdateError) {
-                      console.error(`[!!! Twilio Call Update Error] Failed for CallSid ${callSid}:`, callUpdateError);
-                  }
-                } else {
-                   console.warn("[Twilio] Cannot update call on stop event: callSid is missing.");
-                }
-              } catch (error) {
-                 console.error("[!!! Twilio Stop Event General Error]:", error);
-              }
-              console.log(`[Twilio] Finished processing stop event for Stream ${streamSid}`);
-              break;
-
-            default:
-              console.log(`[Twilio] Unhandled event: ${msg.event}`);
+          } catch (error) { 
+             console.error("[!!! Twilio Outer Message Handler Error]:", error, "| Raw Message:", message);
           }
-        } catch (error) { 
-           console.error("[!!! Twilio Outer Message Handler Error]:", error, "| Raw Message:", message);
-        }
-      });
+        });
 
-      ws.on("close", (code, reason) => {
-        console.log(`[!!! Twilio WS Closed]: Code=${code}, Reason=${reason ? reason.toString() : 'N/A'}`);
-        if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-           console.log("[ElevenLabs] Closing WS connection because Twilio WS closed.");
-           elevenLabsWs.close();
-        }
-        isElevenLabsWsOpen = false;
-      });
+        ws.on("close", (code, reason) => {
+          console.log(`[!!! Twilio WS Closed]: Code=${code}, Reason=${reason ? reason.toString() : 'N/A'}`);
+          if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+             console.log("[ElevenLabs] Closing WS connection because Twilio WS closed.");
+             elevenLabsWs.close();
+          }
+          isElevenLabsWsOpen = false;
+        });
+
+      } catch (handlerError) {
+          console.error(`[!!! WS Handler CRITICAL ERROR] Error within main WebSocket handler setup:`, handlerError);
+          // Optionally close the WebSocket if a critical setup error occurs
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+              ws.close(1011, "Internal Server Error during WS setup");
+          }
+      }
+      // --- End wrap --- 
     }
   );
 
