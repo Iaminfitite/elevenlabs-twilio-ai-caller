@@ -90,35 +90,44 @@ fastify.register(async fastifyInstance => {
 
     // Set up ElevenLabs connection
     const setupElevenLabs = async () => {
+      console.log(`[!!! EL Setup @ ${Date.now()}] Attempting in ${__filename}`); // Log which file
       try {
-        const signedUrl = await getSignedUrl();
+        const signedUrlStartTime = Date.now();
+        console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
+        const signedUrl = await getSignedUrl(); 
+        const signedUrlEndTime = Date.now();
+        if (!signedUrl) {
+            console.error(`[!!! EL Setup @ ${signedUrlEndTime}] FAILED to get signed URL. Elapsed: ${signedUrlEndTime - signedUrlStartTime}ms.`);
+            return; // Stop if no signed URL
+        }
+        console.log(`[!!! EL Setup @ ${signedUrlEndTime}] Got signed URL in ${signedUrlEndTime - signedUrlStartTime}ms. Attempting WebSocket connection to: ${signedUrl.split('?')[0]}...`); 
+
+        const wsConnectStartTime = Date.now();
         elevenLabsWs = new WebSocket(signedUrl);
 
         elevenLabsWs.on("open", () => {
-          console.log("[ElevenLabs] Connected to Conversational AI for inbound call");
-
-          // Calculate current date
+          const wsConnectEndTime = Date.now();
+          console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket OPENED in ${wsConnectEndTime - wsConnectStartTime}ms.`);
+          
           const today = new Date();
           const year = today.getFullYear();
           const month = String(today.getMonth() + 1).padStart(2, '0');
           const day = String(today.getDate()).padStart(2, '0');
           const currentDateYYYYMMDD = `${year}-${month}-${day}`;
 
-          // Send initial configuration with dynamic variables
           const initialConfig = {
             type: "conversation_initiation_client_data",
-            // You might need to include conversation_config_override if you use specific agent settings
-            // conversation_config_override: {
-            //   agent: { prompt: { prompt: "your_agent_prompt_if_overriding" } },
-            //   tts: { voice_id: "your_voice_id_if_overriding" },
-            //   audio_output: { encoding: "ulaw", sample_rate: 8000 }
-            // },
             dynamic_variables: {
-              "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
+              "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD 
             }
           };
-          console.log(`[ElevenLabs Inbound] Sending initial config with date: ${currentDateYYYYMMDD}`);
-          elevenLabsWs.send(JSON.stringify(initialConfig));
+          console.log(`[!!! EL Setup @ ${Date.now()}] Preparing to send initialConfig with date: ${currentDateYYYYMMDD}`);
+          try {
+            elevenLabsWs.send(JSON.stringify(initialConfig));
+            console.log(`[!!! EL Setup @ ${Date.now()}] Successfully SENT initialConfig.`);
+          } catch (sendError) {
+            console.error(`[!!! EL Setup @ ${Date.now()}] FAILED to send initialConfig:`, sendError);
+          }
         });
 
         elevenLabsWs.on("message", data => {
@@ -202,15 +211,17 @@ fastify.register(async fastifyInstance => {
           }
         });
 
-        elevenLabsWs.on("error", error => {
-          console.error("[ElevenLabs] WebSocket error:", error);
+        elevenLabsWs.on("error", (error) => {
+          console.error(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket ERROR:`, error);
         });
 
-        elevenLabsWs.on("close", () => {
-          console.log("[ElevenLabs] Disconnected");
+        elevenLabsWs.on("close", (code, reason) => {
+          const reasonStr = reason ? reason.toString() : 'N/A';
+          console.log(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket CLOSED. Code: ${code}, Reason: ${reasonStr}`);
+          // isElevenLabsWsOpen = false; // Define this if used elsewhere in index.js context
         });
       } catch (error) {
-        console.error("[ElevenLabs] Setup error:", error);
+        console.error(`[!!! EL Setup @ ${Date.now()}] CRITICAL error in setupElevenLabs function:`, error);
       }
     };
 

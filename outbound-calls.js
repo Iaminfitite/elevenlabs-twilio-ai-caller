@@ -198,89 +198,73 @@ export default async function (fastify, opts) {
       let resolveElevenLabsWsOpen = null;
       const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
       let isElevenLabsWsOpen = false;
-      let twilioAudioBuffer = []; // <-- Add buffer array
-      let setupStartTime = null; // <--- Add timing variable
+      let twilioAudioBuffer = [];
+      let setupStartTime = null;
 
       ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
       const setupElevenLabs = async () => {
-        // --- Add Log A: Before getting signed URL ---
-        setupStartTime = Date.now(); // <--- Start timing
-        console.log(`[!!! Debug EL Setup @ ${setupStartTime}] Attempting to get signed URL...`);
-        try { // <--- Wrap the whole setup in a try-catch
+        console.log(`[!!! EL Setup @ ${Date.now()}] Attempting in ${__filename}`);
+        try {
           const signedUrlStartTime = Date.now();
+          console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
           const signedUrl = await getSignedUrl();
           const signedUrlEndTime = Date.now();
-          console.log(`[!!! Debug EL Setup] Got signed URL in ${signedUrlEndTime - signedUrlStartTime}ms. Attempting WebSocket connection...`);
+          if (!signedUrl) {
+              console.error(`[!!! EL Setup @ ${signedUrlEndTime}] FAILED to get signed URL. Elapsed: ${signedUrlEndTime - signedUrlStartTime}ms.`);
+              return;
+          }
+          console.log(`[!!! EL Setup @ ${signedUrlEndTime}] Got signed URL in ${signedUrlEndTime - signedUrlStartTime}ms. Attempting WebSocket connection to: ${signedUrl.split('?')[0]}...`);
 
           const wsConnectStartTime = Date.now();
           elevenLabsWs = new WebSocket(signedUrl);
 
           elevenLabsWs.on("open", () => {
             const wsConnectEndTime = Date.now();
-            // --- Add Log C: ElevenLabs WS Open ---
-            console.log(`[!!! Debug EL Setup] ElevenLabs WebSocket OPENED in ${wsConnectEndTime - wsConnectStartTime}ms (Total setup time: ${wsConnectEndTime - setupStartTime}ms).`);
-            console.log("[ElevenLabs] Connected to Conversational AI"); // Keep original log too
+            console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket OPENED in ${wsConnectEndTime - wsConnectStartTime}ms.`);
             isElevenLabsWsOpen = true;
-            if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen(); // Signal that WS is open
+            if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
 
-            // --- Send Buffered Audio --- 
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = String(today.getMonth() + 1).padStart(2, '0');
+            const day = String(today.getDate()).padStart(2, '0');
+            const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+
+            const initialConfig = {
+              type: "conversation_initiation_client_data",
+              dynamic_variables: {
+                "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
+              }
+            };
+            console.log(`[!!! EL Setup @ ${Date.now()}] Preparing to send initialConfig with date: ${currentDateYYYYMMDD}`);
+            try {
+              elevenLabsWs.send(JSON.stringify(initialConfig));
+              console.log(`[!!! EL Setup @ ${Date.now()}] Successfully SENT initialConfig.`);
+            } catch (sendError) {
+              console.error(`[!!! EL Setup @ ${Date.now()}] FAILED to send initialConfig:`, sendError);
+            }
+
             if (twilioAudioBuffer.length > 0) {
-              console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Attempting to send...`); // <--- Log before loop
+              console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Attempting to send...`);
               twilioAudioBuffer.forEach((audioChunk, index) => {
                 try {
                   const audioMessage = { user_audio_chunk: audioChunk };
                   elevenLabsWs.send(JSON.stringify(audioMessage));
-                  if (index === twilioAudioBuffer.length - 1) { // Log after last chunk sent
+                  if (index === twilioAudioBuffer.length - 1) {
                       console.log("[!!! Debug EL Setup] Finished sending buffered audio.");
                   }
                 } catch (bufferSendError) {
                   console.error(`[!!! Debug EL Setup] Error sending buffered audio chunk #${index}:`, bufferSendError);
                 }
               });
-              twilioAudioBuffer = []; // Clear buffer
+              twilioAudioBuffer = [];
             } else {
-                console.log("[!!! Debug EL Setup] EL WS Open: No buffered audio chunks to send."); // <--- Log if buffer is empty
+                console.log("[!!! Debug EL Setup] EL WS Open: No buffered audio chunks to send.");
             }
-            // ---------------------------
-
-            // --- Add current date calculation ---
-            const today = new Date();
-            const year = today.getFullYear();
-            const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
-            const day = String(today.getDate()).padStart(2, '0');
-            const currentDateYYYYMMDD = `${year}-${month}-${day}`;
-            // ------------------------------------
-
-            const explicitInitialConfig = {
-                type: "conversation_initiation_client_data",
-                conversation_config_override: {
-                    // ... existing agent, tts, audio_output config ...
-                    agent: {
-                        prompt: { prompt: agentPrompt }
-                    },
-                    tts: {
-                        voice_id: voiceId
-                    },
-                    audio_output: { 
-                        encoding: "ulaw",
-                        sample_rate: 8000
-                    }
-                },
-                // --- Pass current date as a dynamic variable ---
-                dynamic_variables: { 
-                    "current_date_yyyymmdd": currentDateYYYYMMDD 
-                }      
-            };
-            console.log(`[!!! Debug EL Setup] Sending explicit init message with current date: ${currentDateYYYYMMDD}`);
-            elevenLabsWs.send(JSON.stringify(explicitInitialConfig));
-            // console.log("[!!! Debug EL Setup] Explicit init message sent."); // Old log
-
           });
 
           elevenLabsWs.on("message", (data) => {
-            // --- Add Log D: Message received from ElevenLabs ---
-            console.log("[!!! Debug EL Setup] Message RECEIVED from ElevenLabs.");
             try {
               const message = JSON.parse(data);
 
@@ -351,20 +335,17 @@ export default async function (fastify, opts) {
                   );
                   break;
 
-                // --- START: Add Tool Call Handling ---
                 case "client_tool_call":
-                  // --- Log the raw incoming tool call request --- 
                   console.log(`[!!! Debug Tool Call] Received RAW client_tool_call from EL:`, JSON.stringify(message));
                   
                   const { tool_name, tool_call_id, parameters } = message.client_tool_call;
                   
-                  // Asynchronously handle the tool execution
                   handleToolExecution(tool_name, parameters)
                     .then(result => {
                         const response = {
                             type: "client_tool_result",
                             tool_call_id: tool_call_id,
-                            result: JSON.stringify(result), // Ensure result is stringified
+                            result: JSON.stringify(result),
                             is_error: false
                         };
                         console.log(`[ElevenLabs] Sending Tool Result:`, JSON.stringify(response));
@@ -376,7 +357,7 @@ export default async function (fastify, opts) {
                         const response = {
                             type: "client_tool_result",
                             tool_call_id: tool_call_id,
-                            result: JSON.stringify({ error: error.message || 'Tool execution failed' }), // Stringify error
+                            result: JSON.stringify({ error: error.message || 'Tool execution failed' }),
                             is_error: true
                         };
                         console.error(`[Server] Error executing tool '${tool_name}':`, error);
@@ -386,7 +367,6 @@ export default async function (fastify, opts) {
                         }
                     });
                   break;
-                // --- END: Add Tool Call Handling ---
 
                 default:
                   console.log(
@@ -399,24 +379,19 @@ export default async function (fastify, opts) {
           });
 
           elevenLabsWs.on("error", (error) => {
-             // --- Add Log E: ElevenLabs WS Error ---
-             console.error("[!!! Debug EL Setup] ElevenLabs WebSocket ERROR:", error);
+             console.error(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket ERROR:`, error);
           });
           elevenLabsWs.on("close", (code, reason) => {
-            // --- Add Log F: ElevenLabs WS Closed ---
-            console.log(`[!!! Debug EL Setup] ElevenLabs WebSocket CLOSED. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
+            const reasonStr = reason ? reason.toString() : 'N/A';
+            console.log(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket CLOSED. Code: ${code}, Reason: ${reasonStr}`);
             isElevenLabsWsOpen = false;
           });
-        } catch (error) { // <--- Catch errors during setup
-          const setupEndTime = Date.now();
-          // --- Add Log G: Error during setupElevenLabs ---
-          console.error(`[!!! Debug EL Setup] Error in setupElevenLabs function after ${setupEndTime - setupStartTime}ms:`, error);
-          // Optionally close the Twilio WS connection if EL setup fails critically
-          // ws.close(1011, "ElevenLabs setup failed"); 
+        } catch (error) {
+          console.error(`[!!! EL Setup @ ${Date.now()}] CRITICAL error in setupElevenLabs function:`, error);
         }
       };
 
-      setupElevenLabs(); // Call setup immediately when Twilio connects
+      setupElevenLabs();
 
       ws.on("message", async (message) => {
         try {
@@ -425,7 +400,6 @@ export default async function (fastify, opts) {
 
           switch (msg.event) {
             case "start":
-              // --- Add Log 1: Log the raw start message --- 
               console.log("[!!! Debug Start Event] Received raw start message:", JSON.stringify(msg));
               
               streamSid = msg.start.streamSid;
@@ -437,7 +411,6 @@ export default async function (fastify, opts) {
               let amdResult = 'unknown';
 
               try {
-                // --- Add Log 2: Before parameter extraction --- 
                 console.log("[!!! Debug Start Event] Attempting parameter extraction...");
                 const paramsObjectFromTwilio = msg.start.customParameters;
                 let base64ParamString = '';
@@ -452,7 +425,6 @@ export default async function (fastify, opts) {
                         const decodedParametersString = Buffer.from(base64ParamString, 'base64').toString('utf-8');
                          if (decodedParametersString) { 
                            try {
-                                // --- Add Log 3: Before JSON parsing --- 
                                 console.log("[!!! Debug Start Event] Attempting JSON parse of decoded params...");
                                 callCustomParameters = JSON.parse(decodedParametersString);
                                 console.log("[Twilio] Successfully parsed custom parameters:", callCustomParameters);
@@ -466,9 +438,7 @@ export default async function (fastify, opts) {
                 } else {
                   console.warn("[Twilio] base64ParamString is empty, skipping decode/parse.");
                 }
-                 // --- Add Log 4: Before AMD check --- 
                  console.log("[!!! Debug Start Event] Checking AMD result...");
-                // Check AMD Result 
                 if (callSid && amdResults[callSid]) {
                     const answeredBy = amdResults[callSid];
                     amdResult = answeredBy;
@@ -477,14 +447,12 @@ export default async function (fastify, opts) {
                          isVoicemail = true;
                          console.log(`[AMD Check] Voicemail/Machine detected for ${callSid}`);
                     }
-                    delete amdResults[callSid]; // Clean up checked result
+                    delete amdResults[callSid];
                 } else {
                     console.log(`[AMD Check] No AMD result found for ${callSid} after wait.`);
                 }
 
-                // --- Add Log 5: Before waiting for ElevenLabs WS --- 
                 console.log("[!!! Debug Start Event] Checking ElevenLabs WS state...");
-                // Wait for ElevenLabs WS to be open
                 if (!isElevenLabsWsOpen) {
                     console.log("[ElevenLabs] Waiting for WebSocket connection to open...");
                     await Promise.race([
@@ -493,13 +461,7 @@ export default async function (fastify, opts) {
                     ]);
                 }
                 
-                // --- Add Log 6: Before defining sendInitialConfig --- 
-                // console.log("[!!! Debug Start Event] Defining sendInitialConfig...");
-                // // Define and call sendInitialConfig (amdResult is now in scope)
-                // --- WE ARE NO LONGER CALLING sendInitialConfig from here ---
-
-                // // --- Add Log 9: After calling sendInitialConfig --- 
-                console.log("[!!! Debug Start Event] Finished processing start event logic (sendInitialConfig SKIPPED)."); // Modified Log 9
+                console.log("[!!! Debug Start Event] Finished processing start event logic (sendInitialConfig SKIPPED).");
 
               } catch (error) {
                 console.error("[!!! Twilio Error processing start event]:", error);
@@ -507,52 +469,43 @@ export default async function (fastify, opts) {
               break;
 
             case "media":
-              // --- Add Log H: Media event received, before check --- 
               console.log("[!!! Debug Media] Media received from Twilio. Checking EL WS state...");
-              const audioPayloadBase64 = msg.media.payload; // Directly use the payload
+              const audioPayloadBase64 = msg.media.payload;
               
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                // --- Add Log I: Attempting to send audio to EL --- 
                 console.log("[!!! Debug Media] EL WS is OPEN. Attempting to forward audio...");
                 try {
-                  // Use the direct payload here
                   const audioMessage = { user_audio_chunk: audioPayloadBase64 };
                   elevenLabsWs.send(JSON.stringify(audioMessage));
                 } catch (mediaSendError) {
                    console.error("[!!! Debug Media] Error sending live audio chunk:", mediaSendError);
                 }
               } else {
-                 // --- Buffer the audio if WS not open yet ---
                  console.log("[!!! Debug Media] EL WS is NOT OPEN. Buffering audio chunk.");
-                 // Use the direct payload here too
                  twilioAudioBuffer.push(audioPayloadBase64);
               }
               break;
 
             case "stop":
               console.log(`[Twilio] Received stop event for Stream ${streamSid}`);
-              try { // Outer try for the whole stop handler logic
+              try {
                 if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                   console.log("[ElevenLabs] Closing WS connection due to Twilio stop event.");
-                  elevenLabsWs.close(); // Close EL WS first
+                  elevenLabsWs.close();
                 }
                 
-                // Now handle the Twilio call ending
                 if (callSid) {
-                  // Inner try specifically for the Twilio API call
                   try {
                       console.log(`[Twilio] Attempting to update call ${callSid} status to completed...`);
                       await twilioClient.calls(callSid).update({ status: "completed" });
                       console.log(`[Twilio] Successfully sent command to update call ${callSid}`);
                   } catch (callUpdateError) {
-                      // Log the specific error from the call update attempt
                       console.error(`[!!! Twilio Call Update Error] Failed for CallSid ${callSid}:`, callUpdateError);
                   }
                 } else {
                    console.warn("[Twilio] Cannot update call on stop event: callSid is missing.");
                 }
               } catch (error) {
-                 // Catch errors from ElevenLabs close or general logic within the outer try
                  console.error("[!!! Twilio Stop Event General Error]:", error);
               }
               console.log(`[Twilio] Finished processing stop event for Stream ${streamSid}`);
@@ -566,10 +519,8 @@ export default async function (fastify, opts) {
         }
       });
 
-      // Handle WebSocket closure
       ws.on("close", (code, reason) => {
         console.log(`[!!! Twilio WS Closed]: Code=${code}, Reason=${reason ? reason.toString() : 'N/A'}`);
-        // Attempt to close ElevenLabs WS if Twilio closes unexpectedly
         if (elevenLabsWs?.readyState === WebSocket.OPEN) {
            console.log("[ElevenLabs] Closing WS connection because Twilio WS closed.");
            elevenLabsWs.close();
@@ -584,37 +535,29 @@ export default async function (fastify, opts) {
     const { 
         CallSid, 
         CallStatus, 
-        AnsweredBy, // Values can include: machine_start, human, fax, unknown etc.
+        AnsweredBy,
         Duration, 
         Timestamp 
     } = request.body;
     
-    // Log the received status
     console.log(`[Call Status] CallSid: ${CallSid}, Status: ${CallStatus}, AnsweredBy: ${AnsweredBy}, Duration: ${Duration}`);
 
-    // --- Voicemail/Machine Detection Hangup Logic --- 
-    // Check if AnsweredBy indicates a machine
-    const machineResponses = ["machine_start", "fax"]; // Add others like machine_end_beep if needed
+    const machineResponses = ["machine_start", "fax"];
     if (AnsweredBy && machineResponses.includes(AnsweredBy)) {
       console.log(`[AMD] Machine detected (${AnsweredBy}) for CallSid: ${CallSid}. Ending call.`);
       try {
-        // Use the Twilio client to end the call
         await twilioClient.calls(CallSid).update({ status: "completed" });
         console.log(`[AMD] Successfully sent command to end call ${CallSid}`);
       } catch (error) {
         console.error(`[AMD] Error trying to end call ${CallSid} after machine detection:`, error);
       }
-      // No need to store in amdResults if we hang up immediately
     } else if (AnsweredBy && AnsweredBy === "human") {
        console.log(`[AMD] Human detected for CallSid: ${CallSid}. Call continues.`);
-       // Optionally store this confirmation if needed elsewhere, but amdResults isn't used now
-       // amdResults[CallSid] = AnsweredBy; 
     } else if (AnsweredBy) {
        console.log(`[AMD] Received AnsweredBy status '${AnsweredBy}' for CallSid: ${CallSid}. Call continues.`);
     }
-    // -----------------------------------------------
 
-    reply.status(200).send(); // Respond OK to Twilio
+    reply.status(200).send();
   });
 
   // Add basic error handler for the whole Fastify instance
@@ -624,7 +567,6 @@ export default async function (fastify, opts) {
   });
 }
 
-// --- START: Update Tool Execution Function ---
 async function handleToolExecution(toolName, parameters) {
     const executionStartTime = Date.now();
     console.log(`[Server @ ${executionStartTime}] Attempting tool: ${toolName} with params:`, JSON.stringify(parameters));
@@ -637,7 +579,7 @@ async function handleToolExecution(toolName, parameters) {
 
     let url;
     let options = {
-        signal: AbortSignal.timeout(10000), // 10 second timeout
+        signal: AbortSignal.timeout(10000),
         headers: {
             'Authorization': `ApiKey ${calComApiKey}`,
             'Content-Type': 'application/json'
@@ -656,13 +598,8 @@ async function handleToolExecution(toolName, parameters) {
             options.method = 'GET';
             options.headers['cal-api-version'] = '2024-09-04';
 
-            // --- START: Parameter Transformation for Cal.com /v2/slots ---
             const calComParams = {};
 
-            // Directly use parameters provided by LLM after validation
-            // LLM is expected to calculate the date based on its prompt
-
-            // *** YOU MUST VERIFY/ADJUST THESE PARAMETER NAMES based on LLM output ***
             if (parameters.eventTypeId) {
                 calComParams.eventTypeId = parameters.eventTypeId;
             } else {
@@ -670,25 +607,16 @@ async function handleToolExecution(toolName, parameters) {
                  throw new Error("Missing required 'eventTypeId' parameter from LLM for get_available_slots.");
             }
 
-            // Validate and use the start date from LLM
             if (parameters.start && /^\d{4}-\d{2}-\d{2}$/.test(parameters.start)) {
                 calComParams.start = parameters.start;
                 console.log(`[Server] Using start date from LLM: ${calComParams.start}`);
 
-                // Determine end date (e.g., same day or 7 days after based on prompt logic)
-                // Assuming LLM sends both start and end, or we default end to start + duration
                 if (parameters.end && /^\d{4}-\d{2}-\d{2}$/.test(parameters.end)) {
                     calComParams.end = parameters.end;
                      console.log(`[Server] Using end date from LLM: ${calComParams.end}`);
                 } else {
-                    // Default end date logic if LLM doesn't provide it (e.g., same day)
                     calComParams.end = calComParams.start; 
                     console.log(`[Server] Defaulting end date to start date: ${calComParams.end}`);
-                    // Or calculate end = start + 7 days if that's the required logic
-                    // const endDate = new Date(calComParams.start + 'T00:00:00Z');
-                    // endDate.setUTCDate(endDate.getUTCDate() + 7);
-                    // calComParams.end = endDate.toISOString().split('T')[0];
-                    // console.log(`[Server] Calculating end date (+7 days): ${calComParams.end}`);
                 }
 
             } else {
@@ -696,20 +624,15 @@ async function handleToolExecution(toolName, parameters) {
                  throw new Error("Missing or invalid 'start' date parameter (YYYY-MM-DD) from LLM.");
             }
             
-            // Use timezone from LLM if provided and valid, otherwise default
             if (parameters.timeZone && /^[a-zA-Z_]+\/[a-zA-Z_]+$/.test(parameters.timeZone)) {
                 calComParams.timeZone = parameters.timeZone;
                  console.log(`[Server] Using timeZone from LLM: ${calComParams.timeZone}`);
             } else {
-                calComParams.timeZone = 'Australia/Brisbane'; // Default timezone
+                calComParams.timeZone = 'Australia/Brisbane';
                 console.log(`[Server] Defaulting timeZone to: ${calComParams.timeZone}`);
             }
 
-            // Add other necessary parameters if needed
-            // if (parameters.hostUserId) calComParams.hostUserId = parameters.hostUserId;
-
             const queryParams = new URLSearchParams(calComParams).toString();
-            // --- END: Parameter Transformation ---
 
             url = `https://api.cal.com/v2/slots?${queryParams}`;
             console.log(`[Server] Calling ${options.method} ${url}`);
@@ -749,12 +672,8 @@ async function handleToolExecution(toolName, parameters) {
         const executionEndTime = Date.now();
         console.error(`[Server] Error executing tool '${toolName}' after ${executionEndTime - executionStartTime}ms:`, error);
         if (error.name === 'TimeoutError') {
-             // Ensure the specific error message is returned to EL
              throw new Error(`API call to ${toolName} timed out after 10 seconds.`);
         }
-        // Re-throw the original or enhanced error (ensure message gets to EL)
-        // Throwing error ensures is_error: true is set in the response to EL
         throw error;
     }
 }
-// --- END: Update Tool Execution Function ---
