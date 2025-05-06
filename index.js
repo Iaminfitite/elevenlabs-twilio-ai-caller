@@ -95,7 +95,30 @@ fastify.register(async fastifyInstance => {
         elevenLabsWs = new WebSocket(signedUrl);
 
         elevenLabsWs.on("open", () => {
-          console.log("[ElevenLabs] Connected to Conversational AI");
+          console.log("[ElevenLabs] Connected to Conversational AI for inbound call");
+
+          // Calculate current date
+          const today = new Date();
+          const year = today.getFullYear();
+          const month = String(today.getMonth() + 1).padStart(2, '0');
+          const day = String(today.getDate()).padStart(2, '0');
+          const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+
+          // Send initial configuration with dynamic variables
+          const initialConfig = {
+            type: "conversation_initiation_client_data",
+            // You might need to include conversation_config_override if you use specific agent settings
+            // conversation_config_override: {
+            //   agent: { prompt: { prompt: "your_agent_prompt_if_overriding" } },
+            //   tts: { voice_id: "your_voice_id_if_overriding" },
+            //   audio_output: { encoding: "ulaw", sample_rate: 8000 }
+            // },
+            dynamic_variables: {
+              "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
+            }
+          };
+          console.log(`[ElevenLabs Inbound] Sending initial config with date: ${currentDateYYYYMMDD}`);
+          elevenLabsWs.send(JSON.stringify(initialConfig));
         });
 
         elevenLabsWs.on("message", data => {
