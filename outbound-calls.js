@@ -633,9 +633,9 @@ export default async function (fastify, opts) {
   });
 }
 
-// --- START: Update Tool Execution Function to Call Webhooks ---
+// --- START: Update Tool Execution Function ---
 async function handleToolExecution(toolName, parameters) {
-    const executionStartTime = Date.now(); // <--- Timing start
+    const executionStartTime = Date.now();
     console.log(`[Server @ ${executionStartTime}] Attempting tool: ${toolName} with params:`, JSON.stringify(parameters));
 
     const calComApiKey = process.env.CAL_COM_API_KEY;
@@ -646,11 +646,10 @@ async function handleToolExecution(toolName, parameters) {
 
     let url;
     let options = {
-        // Add a timeout (e.g., 10 seconds)
-        signal: AbortSignal.timeout(10000), // <--- Add AbortSignal for timeout
+        signal: AbortSignal.timeout(10000), // 10 second timeout
         headers: {
-            'Authorization': `ApiKey ${calComApiKey}`, 
-            'Content-Type': 'application/json' 
+            'Authorization': `ApiKey ${calComApiKey}`,
+            'Content-Type': 'application/json'
         }
     };
 
@@ -659,16 +658,62 @@ async function handleToolExecution(toolName, parameters) {
             url = 'https://api.cal.com/v2/bookings';
             options.method = 'POST';
             options.headers['cal-api-version'] = '2024-08-13';
-            options.body = JSON.stringify(parameters); 
+            options.body = JSON.stringify(parameters);
             console.log(`[Server] Calling ${options.method} ${url} with body:`, options.body);
 
         } else if (toolName === 'get_available_slots') {
-            const queryParams = new URLSearchParams(parameters).toString();
-            url = `https://api.cal.com/v2/slots?${queryParams}`;
             options.method = 'GET';
             options.headers['cal-api-version'] = '2024-09-04';
-            // No body for GET requests
+
+            // --- START: Parameter Transformation for Cal.com /v2/slots ---
+            const calComParams = {};
+
+            // Copy required params directly (adjust names based on Cal.com API docs/needs)
+            // *** YOU MUST VERIFY/ADJUST THESE PARAMETER NAMES ***
+            if (parameters.eventTypeId) calComParams.eventTypeId = parameters.eventTypeId;
+            // if (parameters.hostUserId) calComParams.hostUserId = parameters.hostUserId; // Example: If needed
+            // Add other necessary parameters based on Cal.com API docs...
+
+            // Calculate date based on description (simple "tomorrow" example)
+            // *** YOU MUST VERIFY/ADJUST 'requested_date_description' based on what EL sends ***
+            if (parameters.requested_date_description === 'tomorrow') {
+                const tomorrow = new Date();
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                const year = tomorrow.getFullYear();
+                const month = String(tomorrow.getMonth() + 1).padStart(2, '0');
+                const day = String(tomorrow.getDate()).padStart(2, '0');
+                const dateStr = `${year}-${month}-${day}`;
+                calComParams.dateFrom = dateStr;
+                calComParams.dateTo = dateStr; // Check slots for the single day
+                console.log(`[Server] Interpreted 'tomorrow' as ${dateStr}`);
+            } else if (parameters.specific_date_yyyymmdd) {
+                 // Handle if EL sends a specific date directly
+                 // *** YOU MUST VERIFY/ADJUST 'specific_date_yyyymmdd' based on what EL sends ***
+                 calComParams.dateFrom = parameters.specific_date_yyyymmdd;
+                 calComParams.dateTo = parameters.specific_date_yyyymmdd;
+                 console.log(`[Server] Using specific date: ${parameters.specific_date_yyyymmdd}`);
+            }
+            // TODO: Add more robust date parsing logic here if needed (e.g., "next week", "October 25th")
+
+
+            // --- Parameter Validation ---
+            if (!calComParams.dateFrom || !calComParams.dateTo) {
+                 console.error("[Server] Could not determine date range for get_available_slots. Parameters received from EL:", JSON.stringify(parameters));
+                 throw new Error("Could not determine date range from parameters provided by ElevenLabs agent.");
+            }
+            // *** YOU MUST VERIFY/ADJUST 'eventTypeId' check if the parameter name is different ***
+            if (!calComParams.eventTypeId) {
+                 console.error("[Server] Missing required 'eventTypeId' for get_available_slots. Parameters received from EL:", JSON.stringify(parameters));
+                 throw new Error("Missing required 'eventTypeId' parameter for get_available_slots.");
+            }
+            // Add checks for other essential parameters needed by Cal.com here
+
+            const queryParams = new URLSearchParams(calComParams).toString();
+            // --- END: Parameter Transformation ---
+
+            url = `https://api.cal.com/v2/slots?${queryParams}`;
             console.log(`[Server] Calling ${options.method} ${url}`);
+
 
         } else if (toolName === 'end_call') {
             console.log(`[Server] Received request for System tool: ${toolName}.`);
@@ -681,35 +726,35 @@ async function handleToolExecution(toolName, parameters) {
         const fetchStartTime = Date.now();
         const response = await fetch(url, options);
         const fetchEndTime = Date.now();
-        const responseBody = await response.text(); // Read body first for better error logging
+        const responseBody = await response.text();
         const responseParseTime = Date.now();
 
         console.log(`[Server] API Response: Status=${response.status}, FetchTime=${fetchEndTime - fetchStartTime}ms, BodyReadTime=${responseParseTime - fetchEndTime}ms, Body=${responseBody}`);
 
         if (!response.ok) {
-            // Throw detailed error including status and body
             throw new Error(`API call to ${url} failed with status ${response.status}: ${responseBody}`);
         }
-        
+
         try {
             const jsonResult = JSON.parse(responseBody);
             const executionEndTime = Date.now();
             console.log(`[Server] Success tool: ${toolName}. Total Execution Time: ${executionEndTime - executionStartTime}ms`);
-            return jsonResult; 
+            return jsonResult;
         } catch (parseError) {
              console.error(`[Server] Error parsing JSON response for ${toolName}: ${parseError}. Raw body: ${responseBody}`);
-             throw new Error(`Failed to parse JSON response from tool ${toolName}`); 
+             throw new Error(`Failed to parse JSON response from tool ${toolName}`);
         }
 
     } catch (error) {
         const executionEndTime = Date.now();
         console.error(`[Server] Error executing tool '${toolName}' after ${executionEndTime - executionStartTime}ms:`, error);
-        // Check if it's a timeout error specifically
         if (error.name === 'TimeoutError') {
+             // Ensure the specific error message is returned to EL
              throw new Error(`API call to ${toolName} timed out after 10 seconds.`);
         }
-        // Re-throw the original or enhanced error
-        throw error; 
+        // Re-throw the original or enhanced error (ensure message gets to EL)
+        // Throwing error ensures is_error: true is set in the response to EL
+        throw error;
     }
 }
 // --- END: Update Tool Execution Function ---
