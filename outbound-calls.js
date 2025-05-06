@@ -353,7 +353,9 @@ export default async function (fastify, opts) {
 
                 // --- START: Add Tool Call Handling ---
                 case "client_tool_call":
-                  console.log(`[ElevenLabs] Received Tool Call Request:`, JSON.stringify(message.client_tool_call));
+                  // --- Log the raw incoming tool call request --- 
+                  console.log(`[!!! Debug Tool Call] Received RAW client_tool_call from EL:`, JSON.stringify(message));
+                  
                   const { tool_name, tool_call_id, parameters } = message.client_tool_call;
                   
                   // Asynchronously handle the tool execution
@@ -657,45 +659,54 @@ async function handleToolExecution(toolName, parameters) {
             // --- START: Parameter Transformation for Cal.com /v2/slots ---
             const calComParams = {};
 
-            // Copy required params directly (adjust names based on Cal.com API docs/needs)
-            // *** YOU MUST VERIFY/ADJUST THESE PARAMETER NAMES ***
-            if (parameters.eventTypeId) calComParams.eventTypeId = parameters.eventTypeId;
-            // if (parameters.hostUserId) calComParams.hostUserId = parameters.hostUserId; // Example: If needed
-            // Add other necessary parameters based on Cal.com API docs...
+            // Directly use parameters provided by LLM after validation
+            // LLM is expected to calculate the date based on its prompt
 
-            // Calculate date based on description (simple "tomorrow" example)
-            // *** YOU MUST VERIFY/ADJUST 'requested_date_description' based on what EL sends ***
-            if (parameters.requested_date_description === 'tomorrow') {
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                const year = tomorrow.getFullYear();
-                const month = String(tomorrow.getMonth() + 1).padStart(2, '0');
-                const day = String(tomorrow.getDate()).padStart(2, '0');
-                const dateStr = `${year}-${month}-${day}`;
-                calComParams.dateFrom = dateStr;
-                calComParams.dateTo = dateStr; // Check slots for the single day
-                console.log(`[Server] Interpreted 'tomorrow' as ${dateStr}`);
-            } else if (parameters.specific_date_yyyymmdd) {
-                 // Handle if EL sends a specific date directly
-                 // *** YOU MUST VERIFY/ADJUST 'specific_date_yyyymmdd' based on what EL sends ***
-                 calComParams.dateFrom = parameters.specific_date_yyyymmdd;
-                 calComParams.dateTo = parameters.specific_date_yyyymmdd;
-                 console.log(`[Server] Using specific date: ${parameters.specific_date_yyyymmdd}`);
+            // *** YOU MUST VERIFY/ADJUST THESE PARAMETER NAMES based on LLM output ***
+            if (parameters.eventTypeId) {
+                calComParams.eventTypeId = parameters.eventTypeId;
+            } else {
+                 console.error("[Server] Missing required 'eventTypeId' from LLM. Parameters:", JSON.stringify(parameters));
+                 throw new Error("Missing required 'eventTypeId' parameter from LLM for get_available_slots.");
             }
-            // TODO: Add more robust date parsing logic here if needed (e.g., "next week", "October 25th")
 
+            // Validate and use the start date from LLM
+            if (parameters.start && /^\d{4}-\d{2}-\d{2}$/.test(parameters.start)) {
+                calComParams.start = parameters.start;
+                console.log(`[Server] Using start date from LLM: ${calComParams.start}`);
 
-            // --- Parameter Validation ---
-            if (!calComParams.dateFrom || !calComParams.dateTo) {
-                 console.error("[Server] Could not determine date range for get_available_slots. Parameters received from EL:", JSON.stringify(parameters));
-                 throw new Error("Could not determine date range from parameters provided by ElevenLabs agent.");
+                // Determine end date (e.g., same day or 7 days after based on prompt logic)
+                // Assuming LLM sends both start and end, or we default end to start + duration
+                if (parameters.end && /^\d{4}-\d{2}-\d{2}$/.test(parameters.end)) {
+                    calComParams.end = parameters.end;
+                     console.log(`[Server] Using end date from LLM: ${calComParams.end}`);
+                } else {
+                    // Default end date logic if LLM doesn't provide it (e.g., same day)
+                    calComParams.end = calComParams.start; 
+                    console.log(`[Server] Defaulting end date to start date: ${calComParams.end}`);
+                    // Or calculate end = start + 7 days if that's the required logic
+                    // const endDate = new Date(calComParams.start + 'T00:00:00Z');
+                    // endDate.setUTCDate(endDate.getUTCDate() + 7);
+                    // calComParams.end = endDate.toISOString().split('T')[0];
+                    // console.log(`[Server] Calculating end date (+7 days): ${calComParams.end}`);
+                }
+
+            } else {
+                 console.error("[Server] Missing or invalid 'start' date (YYYY-MM-DD) from LLM. Parameters:", JSON.stringify(parameters));
+                 throw new Error("Missing or invalid 'start' date parameter (YYYY-MM-DD) from LLM.");
             }
-            // *** YOU MUST VERIFY/ADJUST 'eventTypeId' check if the parameter name is different ***
-            if (!calComParams.eventTypeId) {
-                 console.error("[Server] Missing required 'eventTypeId' for get_available_slots. Parameters received from EL:", JSON.stringify(parameters));
-                 throw new Error("Missing required 'eventTypeId' parameter for get_available_slots.");
+            
+            // Use timezone from LLM if provided and valid, otherwise default
+            if (parameters.timeZone && /^[a-zA-Z_]+\/[a-zA-Z_]+$/.test(parameters.timeZone)) {
+                calComParams.timeZone = parameters.timeZone;
+                 console.log(`[Server] Using timeZone from LLM: ${calComParams.timeZone}`);
+            } else {
+                calComParams.timeZone = 'Australia/Brisbane'; // Default timezone
+                console.log(`[Server] Defaulting timeZone to: ${calComParams.timeZone}`);
             }
-            // Add checks for other essential parameters needed by Cal.com here
+
+            // Add other necessary parameters if needed
+            // if (parameters.hostUserId) calComParams.hostUserId = parameters.hostUserId;
 
             const queryParams = new URLSearchParams(calComParams).toString();
             // --- END: Parameter Transformation ---
