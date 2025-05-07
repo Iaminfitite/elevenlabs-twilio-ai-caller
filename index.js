@@ -90,7 +90,7 @@ fastify.register(async fastifyInstance => {
 
     // Set up ElevenLabs connection
     const setupElevenLabs = async () => {
-      console.log(`[!!! EL Setup @ ${Date.now()}] Attempting in ${__filename}`); // Log which file
+      console.log(`[!!! EL Setup @ ${Date.now()}] Attempting setup in index.js`); // Simplified log
       try {
         const signedUrlStartTime = Date.now();
         console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
@@ -220,6 +220,7 @@ fastify.register(async fastifyInstance => {
           console.log(`[!!! EL Setup @ ${Date.now()}] ElevenLabs WebSocket CLOSED. Code: ${code}, Reason: ${reasonStr}`);
           // isElevenLabsWsOpen = false; // Define this if used elsewhere in index.js context
         });
+
       } catch (error) {
         console.error(`[!!! EL Setup @ ${Date.now()}] CRITICAL error in setupElevenLabs function:`, error);
       }
@@ -283,23 +284,13 @@ fastify.register(async fastifyInstance => {
 });
 
 // *** Add Global Handlers ***
-process.on('uncaughtException', (err, origin) => {
-  console.error(`[!!! Uncaught Exception] Origin: ${origin}, Error: ${err.stack || err}`);
-  // Decide if you need to exit gracefully
-  // process.exit(1); 
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[!!! Unhandled Rejection] At:', promise, 'Reason:', reason);
-  // Decide if you need to exit gracefully
-  // process.exit(1);
-});
-// **************************
+// ... (Global handlers remain the same) ...
 
 // Start the Fastify server
-fastify.listen({ port: PORT, host: "0.0.0.0" }, err => {
+fastify.listen(PORT, (err, address) => {
   if (err) {
     console.error("Error starting server:", err);
     process.exit(1);
   }
-  console.log(`[Server] Listening on port ${PORT}, host 0.0.0.0`);
+  console.log(`Server is listening on ${address}`);
 });

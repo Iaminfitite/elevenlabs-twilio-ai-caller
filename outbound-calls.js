@@ -206,7 +206,7 @@ export default async function (fastify, opts) {
         ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
         const setupElevenLabs = async () => {
-          console.log(`[!!! EL Setup @ ${Date.now()}] Attempting in ${__filename}`);
+          console.log(`[!!! EL Setup @ ${Date.now()}] Attempting setup in outbound-calls.js`);
           try {
             const signedUrlStartTime = Date.now();
             console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
