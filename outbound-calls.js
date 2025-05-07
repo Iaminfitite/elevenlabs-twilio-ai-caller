@@ -235,11 +235,19 @@ export default async function (fastify, opts) {
 
               const initialConfig = {
                 type: "conversation_initiation_client_data",
+                conversation_config_override: {
+                  audio_output: {
+                      encoding: "ulaw",    // Match Twilio
+                      sample_rate: 8000   // Match Twilio
+                  }
+                  // We are not overriding agent prompt or voice_id here,
+                  // so the agent will use its configured defaults.
+                },
                 dynamic_variables: {
                   "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
                 }
               };
-              console.log(`[!!! EL Setup @ ${Date.now()}] Preparing to send initialConfig with date: ${currentDateYYYYMMDD}`);
+              console.log(`[!!! EL Setup @ ${Date.now()}] Preparing to send initialConfig with date: ${currentDateYYYYMMDD} and audio_output config`);
               try {
                 elevenLabsWs.send(JSON.stringify(initialConfig));
                 console.log(`[!!! EL Setup @ ${Date.now()}] Successfully SENT initialConfig.`);
