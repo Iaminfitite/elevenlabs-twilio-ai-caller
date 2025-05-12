@@ -124,10 +124,14 @@ export function registerInboundRoutes(fastify) {
               console.info("[II] Received conversation initiation metadata.");
               break;
             case "audio":
+              if (!streamSid) {
+                console.warn("[II] Received audio from ElevenLabs, but streamSid from Twilio is not yet available. Discarding audio chunk.");
+                return; // Do not send if streamSid is not set
+              }
               if (message.audio_event?.audio_base_64) {
                 const audioData = {
                   event: "media",
-                  streamSid,
+                  streamSid, // Now we are sure streamSid is available
                   media: {
                     payload: message.audio_event.audio_base_64,
                   },
@@ -136,6 +140,10 @@ export function registerInboundRoutes(fastify) {
               }
               break;
             case "interruption":
+              if (!streamSid) {
+                console.warn("[II] Received interruption from ElevenLabs, but streamSid from Twilio is not yet available. Discarding interruption.");
+                return; // Do not send if streamSid is not set
+              }
               connection.send(JSON.stringify({ event: "clear", streamSid }));
               break;
             case "ping":
