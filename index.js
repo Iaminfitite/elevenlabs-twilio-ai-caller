@@ -6,6 +6,7 @@ import fastifyWs from "@fastify/websocket";
 
 // Import the outbound call routes using namespace import
 import * as outboundCallPlugin from './outbound-calls.js';
+import { registerInboundRoutes } from "./inbound-calls.js";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -28,6 +29,9 @@ fastify.register(fastifyWs);
 // Register the outbound call routes using the imported namespace
 // Try accessing the default export explicitly if it exists within the namespace
 fastify.register(outboundCallPlugin.default);
+
+// Register inbound call routes
+registerInboundRoutes(fastify);
 
 const PORT = process.env.PORT || 8000;
 
