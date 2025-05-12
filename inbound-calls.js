@@ -74,6 +74,26 @@ export function registerInboundRoutes(fastify) {
         // Handle open event for ElevenLabs WebSocket
         elevenLabsWs.on("open", () => {
           console.log("[II] Connected to Conversational AI.");
+          // Send initial configuration data to ElevenLabs
+          const today = new Date();
+          const year = today.getFullYear();
+          const month = String(today.getMonth() + 1).padStart(2, '0');
+          const day = String(today.getDate()).padStart(2, '0');
+          const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+
+          const initialConfig = {
+            type: "conversation_initiation_client_data",
+            dynamic_variables: {
+              // You can customize or add more dynamic variables here if needed
+              "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
+            }
+          };
+          try {
+            elevenLabsWs.send(JSON.stringify(initialConfig));
+            console.log("[II] Sent conversation_initiation_client_data to ElevenLabs:", JSON.stringify(initialConfig));
+          } catch (sendError) {
+            console.error("[II] FAILED to send conversation_initiation_client_data:", sendError);
+          }
         });
 
         // Handle messages from ElevenLabs
@@ -92,8 +112,9 @@ export function registerInboundRoutes(fastify) {
         });
 
         // Handle close event for ElevenLabs WebSocket
-        elevenLabsWs.on("close", () => {
-          console.log("[II] Disconnected.");
+        elevenLabsWs.on("close", (code, reason) => {
+          const reasonStr = reason ? reason.toString() : 'N/A';
+          console.log(`[II] Disconnected from ElevenLabs. Code: ${code}, Reason: ${reasonStr}`);
         });
 
         // Function to handle messages from ElevenLabs
@@ -133,12 +154,12 @@ export function registerInboundRoutes(fastify) {
         connection.on("message", async (message) => {
           try {
             const data = JSON.parse(message);
-            switch (data.event) {
-              case "start":
+            // Add this log to see if Twilio sends the 'start' event.
+            if (data.event === "start") {
                 streamSid = data.start.streamSid;
-                console.log(`[Twilio] Stream started with ID: ${streamSid}`);
-                break;
-              case "media":
+                console.log(`[Twilio] Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}`);
+            } else if (data.event === "media") {
+                // Existing media handling
                 if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
                   const audioMessage = {
                     user_audio_chunk: Buffer.from(
@@ -148,13 +169,12 @@ export function registerInboundRoutes(fastify) {
                   };
                   elevenLabsWs.send(JSON.stringify(audioMessage));
                 }
-                break;
-              case "stop":
+            } else if (data.event === "stop") {
+                 console.log(`[Twilio] Received stop event for stream: ${streamSid}`);
                 if (elevenLabsWs) {
                   elevenLabsWs.close();
                 }
-                break;
-              default:
+            } else {
                 console.log(`[Twilio] Received unhandled event: ${data.event}`);
             }
           } catch (error) {
@@ -163,11 +183,12 @@ export function registerInboundRoutes(fastify) {
         });
 
         // Handle close event from Twilio
-        connection.on("close", () => {
-          if (elevenLabsWs) {
+        connection.on("close", (code, reason) => { // fastify-websocket might not provide code/reason here directly
+          if (elevenLabsWs && elevenLabsWs.readyState !== WebSocket.CLOSED) {
             elevenLabsWs.close();
           }
-          console.log("[Twilio] Client disconnected");
+          const reasonStr = reason ? reason.toString() : 'N/A'; // For consistency, though likely N/A
+          console.log(`[Twilio] Client disconnected. Code: ${code}, Reason: ${reasonStr}`);
         });
 
         // Handle errors from Twilio WebSocket
