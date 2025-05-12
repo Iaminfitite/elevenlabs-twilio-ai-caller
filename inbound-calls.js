@@ -23,13 +23,20 @@ export function registerInboundRoutes(fastify) {
       );
 
       if (!response.ok) {
-        throw new Error(`Failed to get signed URL: ${response.statusText}`);
+        const errorBody = await response.text();
+        let errorMessage = `Failed to get signed URL: ${response.status} ${response.statusText}. Response: ${errorBody}`;
+        if (response.status === 401) {
+          errorMessage += "\nPlease check your ELEVENLABS_API_KEY.";
+        } else if (response.status === 400 || response.status === 404 || response.status === 422) {
+          errorMessage += `\nPlease ensure ELEVENLABS_AGENT_ID (${ELEVENLABS_AGENT_ID}) is a valid Agent ID, not a Voice ID or other type of ID.`;
+        }
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
       return data.signed_url;
     } catch (error) {
-      console.error("Error getting signed URL:", error);
+      console.error("Error getting signed URL:", error.message);
       throw error;
     }
   }
