@@ -124,6 +124,7 @@ export function registerInboundRoutes(fastify) {
               console.info("[II] Received conversation initiation metadata.");
               break;
             case "audio":
+              console.log("[II -> Server] Received audio from ElevenLabs.");
               if (!streamSid) {
                 console.warn("[II] Received audio from ElevenLabs, but streamSid from Twilio is not yet available. Discarding audio chunk.");
                 return; // Do not send if streamSid is not set
@@ -137,6 +138,7 @@ export function registerInboundRoutes(fastify) {
                   },
                 };
                 connection.send(JSON.stringify(audioData));
+                console.log("[Server -> Twilio] Sent audio payload to Twilio.");
               }
               break;
             case "interruption":
@@ -170,7 +172,6 @@ export function registerInboundRoutes(fastify) {
                 streamSid = data.start.streamSid;
                 console.log(`[Twilio] Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}`);
             } else if (data.event === "media") {
-                // Existing media handling
                 if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
                   const audioMessage = {
                     user_audio_chunk: Buffer.from(
@@ -179,6 +180,7 @@ export function registerInboundRoutes(fastify) {
                     ).toString("base64"),
                   };
                   elevenLabsWs.send(JSON.stringify(audioMessage));
+                  console.log("[Twilio -> II] Sent user_audio_chunk to ElevenLabs.");
                 }
             } else if (data.event === "stop") {
                  console.log(`[Twilio] Received stop event for stream: ${streamSid}`);
