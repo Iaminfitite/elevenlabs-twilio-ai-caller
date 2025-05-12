@@ -152,6 +152,9 @@ export function registerInboundRoutes(fastify) {
 
         // Handle messages from Twilio
         connection.on("message", async (message) => {
+          // Log the raw message buffer/string first
+          console.log("[Twilio Raw Message]:", message.toString()); 
+
           try {
             const data = JSON.parse(message);
             // Add this log to see if Twilio sends the 'start' event.
