@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 
 export function registerInboundRoutes(fastify) {
+  console.log("[Server] Attempting to register inbound routes...");
+
   // Check for the required environment variables
   const { ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID } = process.env;
 
@@ -43,6 +45,7 @@ export function registerInboundRoutes(fastify) {
 
   // Route to handle incoming calls from Twilio
   fastify.all("/incoming-call-eleven", async (request, reply) => {
+    console.log(`[Server] Received request on /incoming-call-eleven from: ${request.ip}`);
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
         <Connect>
