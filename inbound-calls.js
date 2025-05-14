@@ -98,6 +98,7 @@ export function registerInboundRoutes(fastify) {
 
         // Handle messages from ElevenLabs
         elevenLabsWs.on("message", (data) => {
+          console.log("[II Raw Message]:", data.toString());
           try {
             const message = JSON.parse(data);
             handleElevenLabsMessage(message, connection);
