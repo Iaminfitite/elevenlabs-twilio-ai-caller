@@ -188,6 +188,7 @@ export function registerInboundRoutes(fastify) {
 
         // Handle messages from Twilio
         connection.on("message", async (message) => {
+          console.log("[Twilio WS Message Received]: Type:", typeof message, "Is Buffer:", Buffer.isBuffer(message)); // Very early log
           console.log("[Twilio Raw Message]:", message.toString()); 
           try {
             const data = JSON.parse(message);
