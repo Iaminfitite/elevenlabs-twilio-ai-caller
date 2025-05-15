@@ -195,23 +195,34 @@ export function registerInboundRoutes(fastify) {
         // Handle messages from Twilio
         connection.on("message", async (message) => {
           const rawMessageStr = message.toString(); 
-          console.log("[Twilio Raw Message]:", rawMessageStr); 
-          
-          // Try to parse JSON, but handle non-JSON messages gracefully if necessary
+          console.log("[Twilio Raw Message]:", rawMessageStr);
+
           let data;
           try {
             data = JSON.parse(rawMessageStr); 
           } catch (parseError) {
             console.warn("[Twilio] Received non-JSON message or parse error. Raw:", rawMessageStr, "Error:", parseError);
-            return; // Skip further processing for non-JSON messages
+            return; 
           }
 
-          // Now proceed with event handling if data is valid JSON
+          // Log the event type BEFORE the conditional checks
+          if (data && data.event) {
+            console.log(`[Twilio Event Logger] Received event type: ${data.event}`);
+          } else {
+            console.log("[Twilio Event Logger] Received message without a data.event field.");
+          }
+
           if (data.event === "start") {
+              // Log first, then assign
+              console.log(`[Twilio] Attempting to process START event. Payload: ${JSON.stringify(data.start)}`); 
               streamSid = data.start.streamSid;
-              console.log(`[Twilio] Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}. Account SID: ${data.start.accountSid}. Tracks: ${data.start.tracks}. Media Format: ${JSON.stringify(data.start.mediaFormat)}. Custom Parameters:`, data.start.customParameters);
-              // Process buffered audio/events from ElevenLabs now that we have streamSid
-              console.log(`[Server] Processing ${elevenLabsAudioBuffer.length} buffered messages from ElevenLabs.`);
+              if (streamSid) {
+                console.log(`[Twilio] SUCCESS: Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}. Account SID: ${data.start.accountSid}. Tracks: ${data.start.tracks}. Media Format: ${JSON.stringify(data.start.mediaFormat)}. Custom Parameters:`, data.start.customParameters);
+              } else {
+                console.error("[Twilio] ERROR: START event received, but data.start.streamSid is null or undefined. Full start data:", data.start);
+              }
+              
+              console.log(`[Server] Processing ${elevenLabsAudioBuffer.length} buffered messages from ElevenLabs for stream: ${streamSid}.`);
               elevenLabsAudioBuffer.forEach(bufferedMsg => {
                 if (bufferedMsg.is_interruption) {
                   sendClearToTwilio(connection, streamSid);
@@ -221,6 +232,8 @@ export function registerInboundRoutes(fastify) {
               });
               elevenLabsAudioBuffer = []; // Clear buffer
           } else if (data.event === "media") {
+              // Add a log to confirm media event is recognized by the conditional
+              // console.log("[Twilio Event Logger] Processing MEDIA event."); 
               if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
                 const audioMessage = {
                   user_audio_chunk: Buffer.from(
@@ -232,7 +245,9 @@ export function registerInboundRoutes(fastify) {
                 // console.log("[Twilio -> II] Sent user_audio_chunk to ElevenLabs."); // This log is frequent, can be noisy
               }
           } else if (data.event === "stop") {
-               console.log(`[Twilio] Received stop event for stream: ${streamSid}. Raw stop data streamSid: ${data.streamSid}`);
+              // Add a log to confirm stop event is recognized by the conditional
+              console.log("[Twilio Event Logger] Processing STOP event."); 
+              console.log(`[Twilio] Received stop event. Local streamSid: ${streamSid}. Event streamSid: ${data.streamSid}. Call SID: ${data.stop.callSid}. Account SID: ${data.stop.accountSid}.`);
               if (elevenLabsWs) {
                 elevenLabsWs.close();
               }
