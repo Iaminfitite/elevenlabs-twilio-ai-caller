@@ -195,10 +195,21 @@ export function registerInboundRoutes(fastify) {
 
         // Handle messages from Twilio
         connection.on("message", async (message) => {
-          const rawMessageStr = message.toString(); 
+          // NEW LOG: Log message type and if it's a buffer, before anything else
+          console.log(`[Twilio Message Intercept] Received a message. Type: ${typeof message}, Is Buffer: ${Buffer.isBuffer(message)}`);
+          
+          let rawMessageStr;
+          try {
+            rawMessageStr = message.toString(); 
+          } catch (toStringError) {
+            console.error("[Twilio Message Intercept] CRITICAL: message.toString() failed!", toStringError);
+            // It might be helpful to see what 'message' was if it's not too large or complex
+            // console.error("[Twilio Message Intercept] Message object that failed (details might be limited):", message);
+            return; // Can't proceed if toString fails
+          }
 
           if (!firstTwilioMessageProcessed) {
-            console.log("[Twilio First Message Raw]:", rawMessageStr); // Log the very first raw message
+            console.log("[Twilio First Message Raw]:", rawMessageStr); // Log the very first raw message string
             firstTwilioMessageProcessed = true;
           }
           // Keep the existing raw message log for all messages as well
