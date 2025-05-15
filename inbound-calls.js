@@ -70,6 +70,31 @@ export function registerInboundRoutes(fastify) {
       let firstTwilioMessageProcessed = false;
       let streamSidEstablished = false; // <<< NEW FLAG: To track if streamSid has been set
 
+      // Function to send audio to Twilio
+      const sendAudioToTwilio = (audioBase64, twilioConnection, currentStreamSid) => {
+        if (!currentStreamSid) {
+          console.error("[Server -> Twilio] Attempted to send audio but streamSid is still null!");
+          return;
+        }
+        const audioData = {
+          event: "media",
+          streamSid: currentStreamSid,
+          media: { payload: audioBase64 },
+        };
+        twilioConnection.send(JSON.stringify(audioData));
+        console.log("[Server -> Twilio] Sent audio payload to Twilio.");
+      };
+      
+      // Function to send clear (interruption) to Twilio
+      const sendClearToTwilio = (twilioConnection, currentStreamSid) => {
+          if (!currentStreamSid) {
+              console.error("[Server -> Twilio] Attempted to send clear but streamSid is still null!");
+              return;
+          }
+          twilioConnection.send(JSON.stringify({ event: "clear", streamSid: currentStreamSid }));
+          console.log("[Server -> Twilio] Sent clear event to Twilio.");
+      };
+
       // Helper function to process buffered ElevenLabs audio once streamSid is known
       const processBufferedElevenLabsAudio = () => {
         if (!streamSid) {
@@ -186,31 +211,6 @@ export function registerInboundRoutes(fastify) {
             console.error("[II] Error parsing message from ElevenLabs:", error, "Raw data:", data.toString()); // Log raw data on error
           }
         });
-
-        // Function to send audio to Twilio
-        const sendAudioToTwilio = (audioBase64, twilioConnection, currentStreamSid) => {
-          if (!currentStreamSid) {
-            console.error("[Server -> Twilio] Attempted to send audio but streamSid is still null!");
-            return;
-          }
-          const audioData = {
-            event: "media",
-            streamSid: currentStreamSid,
-            media: { payload: audioBase64 },
-          };
-          twilioConnection.send(JSON.stringify(audioData));
-          console.log("[Server -> Twilio] Sent audio payload to Twilio.");
-        };
-        
-        // Function to send clear (interruption) to Twilio
-        const sendClearToTwilio = (twilioConnection, currentStreamSid) => {
-            if (!currentStreamSid) {
-                console.error("[Server -> Twilio] Attempted to send clear but streamSid is still null!");
-                return;
-            }
-            twilioConnection.send(JSON.stringify({ event: "clear", streamSid: currentStreamSid }));
-            console.log("[Server -> Twilio] Sent clear event to Twilio.");
-        };
 
         // Handle messages from Twilio
         connection.on("message", async (message) => {
