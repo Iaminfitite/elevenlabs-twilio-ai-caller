@@ -101,14 +101,26 @@ export default async function (fastify, opts) {
     if (!airtableRecordId) {
         console.warn("[Server /outbound-call] Warning: airtableRecordId not received in request body.");
     }
-    const callerName = name || "Valued Customer";
+
     try {
+      // --- PRE-FETCH SIGNED URL ---
+      console.log("[Server /outbound-call] Pre-fetching ElevenLabs signed URL...");
+      const elevenLabsSignedUrl = await getSignedUrl();
+      if (!elevenLabsSignedUrl) {
+        console.error("[Server /outbound-call] CRITICAL: Failed to pre-fetch ElevenLabs signed URL. Aborting call.");
+        return reply.code(500).send({ success: false, error: "Failed to prepare resources for the call." });
+      }
+      console.log("[Server /outbound-call] Successfully pre-fetched ElevenLabs signed URL.");
+      // --- END PRE-FETCH ---
+
+      const callerName = name || "Valued Customer";
       const twimlUrl = new URL(`https://${request.headers.host}/outbound-call-twiml`);
       twimlUrl.searchParams.append("name", callerName);
       twimlUrl.searchParams.append("number", number);
       if (airtableRecordId) {
           twimlUrl.searchParams.append("airtableRecordId", airtableRecordId);
       }
+      twimlUrl.searchParams.append("elevenLabsSignedUrl", elevenLabsSignedUrl);
 
       const statusCallbackUrl = `https://${request.headers.host}/call-status`;
       console.log(`[Twilio API] Using statusCallbackUrl: ${statusCallbackUrl}`);
@@ -164,24 +176,30 @@ export default async function (fastify, opts) {
     const name = request.query.name || "Customer";
     const number = request.query.number || "Unknown";
     const airtableRecordId = request.query.airtableRecordId || null;
+    const elevenLabsSignedUrl = request.query.elevenLabsSignedUrl || ""; // Extract pre-fetched URL
 
-    const customParametersForStream = { 
-        name: name, 
-        number: number, 
-        airtableRecordId: airtableRecordId
-    };
+    if (!elevenLabsSignedUrl) {
+        console.error("[!!! Debug TwiML] CRITICAL: elevenLabsSignedUrl is missing from query params. Cannot proceed with stream.");
+        // Send a TwiML response that perhaps says an error occurred or hangs up.
+        const errorTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say>We are experiencing technical difficulties. Please try again later.</Say><Hangup/></Response>`;
+        return reply.type("text/xml").send(errorTwiml);
+    }
 
-    // --- Add TwiML Log 2: Log Params Before Encoding ---
-    console.log("[!!! Debug TwiML] Parameters object to encode:", customParametersForStream);
-    const encodedParameters = Buffer.from(JSON.stringify(customParametersForStream)).toString('base64');
-    // --- Add TwiML Log 3: Log Encoded Params ---
-    console.log("[!!! Debug TwiML] Encoded parameters (Base64):", encodedParameters);
-
+    // --- Parameters are now passed individually ---
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-        <Response><Connect><Stream url="wss://${request.headers.host}/outbound-media-stream"><Parameter name="customParameters" value='${encodedParameters}' /></Stream></Connect></Response>`;
+        <Response>
+          <Connect>
+            <Stream url="wss://${request.headers.host}/outbound-media-stream">
+              <Parameter name="name" value="${name.replace(/[&<>'"]/g, '')}"/>
+              <Parameter name="number" value="${number.replace(/[&<>'"]/g, '')}"/>
+              <Parameter name="airtableRecordId" value="${(airtableRecordId || '').replace(/[&<>'"]/g, '')}"/>
+              <Parameter name="elevenLabsSignedUrl" value="${elevenLabsSignedUrl.replace(/[&<>'"]/g, '')}"/>
+            </Stream>
+          </Connect>
+        </Response>`;
     
     // --- Add TwiML Log 4: Log Final TwiML ---
-    console.log("[!!! Debug TwiML] Sending TwiML response:", twimlResponse);
+    console.log("[!!! Debug TwiML] Sending TwiML response with individual parameters:", twimlResponse);
     reply.type("text/xml").send(twimlResponse);
   });
 
@@ -248,21 +266,27 @@ export default async function (fastify, opts) {
           }
         };
 
-        const setupElevenLabs = async () => {
-          console.log(`[!!! EL Setup @ ${Date.now()}] Attempting setup in outbound-calls.js`);
+        const setupElevenLabs = async (signedUrlFromTwilio) => {
+          console.log(`[!!! EL Setup @ ${Date.now()}] Attempting setup in outbound-calls.js with pre-fetched URL.`);
+          if (!signedUrlFromTwilio) {
+            console.error(`[!!! EL Setup @ ${Date.now()}] CRITICAL: No signed URL provided to setupElevenLabs. Cannot connect.`);
+            // Optionally, close the Twilio WebSocket connection from ws object if this is fatal
+            // ws.close(1011, "Internal server error: Missing EL URL");
+            return;
+          }
           try {
-            const signedUrlStartTime = Date.now();
-            console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
-            const signedUrl = await getSignedUrl();
-            const signedUrlEndTime = Date.now();
-            if (!signedUrl) {
-                console.error(`[!!! EL Setup @ ${signedUrlEndTime}] FAILED to get signed URL. Elapsed: ${signedUrlEndTime - signedUrlStartTime}ms.`);
-                return;
-            }
-            console.log(`[!!! EL Setup @ ${signedUrlEndTime}] Got signed URL in ${signedUrlEndTime - signedUrlStartTime}ms. Attempting WebSocket connection to: ${signedUrl.split('?')[0]}...`);
+            // const signedUrlStartTime = Date.now(); // No longer fetching URL here
+            // console.log(`[!!! EL Setup @ ${signedUrlStartTime}] Getting signed URL...`);
+            // const signedUrl = await getSignedUrl(); // REMOVED - URL is pre-fetched
+            // const signedUrlEndTime = Date.now();
+            // if (!signedUrl) {
+            //     console.error(`[!!! EL Setup @ ${signedUrlEndTime}] FAILED to get signed URL. Elapsed: ${signedUrlEndTime - signedUrlStartTime}ms.`);
+            //     return;
+            // }
+            console.log(`[!!! EL Setup @ ${Date.now()}] Using pre-fetched signed URL. Attempting WebSocket connection to: ${signedUrlFromTwilio.split('?')[0]}...`);
 
             const wsConnectStartTime = Date.now();
-            elevenLabsWs = new WebSocket(signedUrl);
+            elevenLabsWs = new WebSocket(signedUrlFromTwilio); // Use the passed URL
 
             elevenLabsWs.on("open", () => {
               const wsConnectEndTime = Date.now();
@@ -438,25 +462,29 @@ export default async function (fastify, opts) {
                 callSid = msg.start.callSid;
                 console.log(`[Twilio] Stream started: ${streamSid}, CallSid: ${callSid}`);
                 
-                if (msg.start.customParameters && msg.start.customParameters.customParameters) {
-                    try {
-                        const encodedParams = msg.start.customParameters.customParameters;
-                        console.log("[!!! Debug Start Event] Attempting to decode customParameters (Base64):", encodedParams);
-                        const decodedJson = Buffer.from(encodedParams, 'base64').toString('utf-8');
-                        console.log("[!!! Debug Start Event] Decoded customParameters (JSON String):", decodedJson);
-                        decodedCustomParameters = JSON.parse(decodedJson);
-                        console.log("[!!! Debug Start Event] Parsed customParameters:", decodedCustomParameters);
-                    } catch (e) {
-                        console.error("[!!! Debug Start Event] Error decoding/parsing customParameters:", e);
-                        decodedCustomParameters = {}; 
-                    }
-                } else {
-                    console.warn("[!!! Debug Start Event] No customParameters.customParameters found in start event.");
-                    decodedCustomParameters = {};
+                // Parameters are now directly available in msg.start.customParameters (not base64 encoded)
+                const customParams = msg.start.customParameters || {};
+                decodedCustomParameters = {
+                    name: customParams.name || "Valued Customer",
+                    number: customParams.number || "Unknown",
+                    airtableRecordId: customParams.airtableRecordId || null
+                };
+                const receivedElevenLabsSignedUrl = customParams.elevenLabsSignedUrl;
+
+                console.log("[!!! Debug Start Event] Extracted Custom Parameters:", decodedCustomParameters);
+                console.log("[!!! Debug Start Event] Extracted ElevenLabs Signed URL:", receivedElevenLabsSignedUrl);
+
+                if (!receivedElevenLabsSignedUrl) {
+                    console.error("[!!! Debug Start Event] CRITICAL: ElevenLabs Signed URL not found in start event parameters. Cannot connect to ElevenLabs.");
+                    // Optionally close ws here if this is fatal for the call
+                    return; // Stop further processing for this event if URL is missing
                 }
+
+                // Call setupElevenLabs with the pre-fetched URL
+                setupElevenLabs(receivedElevenLabsSignedUrl); 
                 
                 twilioStartEventProcessed = true; // Mark Twilio start event as processed
-                trySendInitialConfig(); // Attempt to send initialConfig
+                trySendInitialConfig(); // Attempt to send initialConfig, will proceed if EL WS also opens
 
                 let isVoicemail = false;
                 let amdResult = 'unknown';
