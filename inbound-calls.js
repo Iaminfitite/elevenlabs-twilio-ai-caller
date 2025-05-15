@@ -66,6 +66,7 @@ export function registerInboundRoutes(fastify) {
       let streamSid = null;
       let elevenLabsWs = null;
       let elevenLabsAudioBuffer = []; // Buffer for early audio from ElevenLabs
+      let firstTwilioMessageProcessed = false; // <<< ADD THIS FLAG
 
       try {
         // Get authenticated WebSocket URL
@@ -195,6 +196,12 @@ export function registerInboundRoutes(fastify) {
         // Handle messages from Twilio
         connection.on("message", async (message) => {
           const rawMessageStr = message.toString(); 
+
+          if (!firstTwilioMessageProcessed) {
+            console.log("[Twilio First Message Raw]:", rawMessageStr); // Log the very first raw message
+            firstTwilioMessageProcessed = true;
+          }
+          // Keep the existing raw message log for all messages as well
           console.log("[Twilio Raw Message]:", rawMessageStr);
 
           let data;
