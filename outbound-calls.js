@@ -196,14 +196,57 @@ export default async function (fastify, opts) {
       try {
         console.log("[!!! WS Handler Entered] Connection attempt received."); 
         
-        let streamSid = null, callSid = null, elevenLabsWs = null, callCustomParameters = null;
+        let streamSid = null, callSid = null, elevenLabsWs = null; // callCustomParameters removed as decodedCustomParameters is used
+        let decodedCustomParameters = null;
         let resolveElevenLabsWsOpen = null;
         const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
         let isElevenLabsWsOpen = false;
         let twilioAudioBuffer = [];
-        let setupStartTime = null; // We keep this for inside setupElevenLabs
+        // let setupStartTime = null; // We keep this for inside setupElevenLabs // Not actively used, can be removed if desired
+
+        // New state flags for initialConfig logic
+        let twilioStartEventProcessed = false;
+        let initialConfigSent = false;
 
         ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
+
+        const trySendInitialConfig = () => {
+          if (isElevenLabsWsOpen && twilioStartEventProcessed && !initialConfigSent) {
+            console.log(`[!!! EL Config] Conditions met. isElevenLabsWsOpen: ${isElevenLabsWsOpen}, twilioStartEventProcessed: ${twilioStartEventProcessed}, initialConfigSent: ${initialConfigSent}`);
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = String(today.getMonth() + 1).padStart(2, '0');
+            const day = String(today.getDate()).padStart(2, '0');
+            const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+
+            const initialConfig = {
+              type: "conversation_initiation_client_data",
+              conversation_config_override: {
+                agent: {},
+                tts: {},
+                audio_output: {
+                    encoding: "ulaw",
+                    sample_rate: 8000
+                }
+              },
+              dynamic_variables: {
+                "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
+                "CALL_DIRECTION": "outbound",
+                ...(decodedCustomParameters || {})
+              }
+            };
+            console.log(`[!!! EL Config] Preparing to send initialConfig: ${JSON.stringify(initialConfig)}`);
+            try {
+              elevenLabsWs.send(JSON.stringify(initialConfig));
+              console.log(`[!!! EL Config] Successfully SENT initialConfig.`);
+              initialConfigSent = true; // Mark as sent
+            } catch (sendError) {
+              console.error(`[!!! EL Config] FAILED to send initialConfig:`, sendError);
+            }
+          } else {
+            console.log(`[!!! EL Config] Conditions NOT YET MET or already sent. isElevenLabsWsOpen: ${isElevenLabsWsOpen}, twilioStartEventProcessed: ${twilioStartEventProcessed}, initialConfigSent: ${initialConfigSent}`);
+          }
+        };
 
         const setupElevenLabs = async () => {
           console.log(`[!!! EL Setup @ ${Date.now()}] Attempting setup in outbound-calls.js`);
@@ -226,39 +269,10 @@ export default async function (fastify, opts) {
               console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket OPENED in ${wsConnectEndTime - wsConnectStartTime}ms.`);
               isElevenLabsWsOpen = true;
               if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
+              
+              trySendInitialConfig(); // Attempt to send initialConfig
 
-              const today = new Date();
-              const year = today.getFullYear();
-              const month = String(today.getMonth() + 1).padStart(2, '0');
-              const day = String(today.getDate()).padStart(2, '0');
-              const currentDateYYYYMMDD = `${year}-${month}-${day}`;
-
-              const initialConfig = {
-                type: "conversation_initiation_client_data",
-                conversation_config_override: {
-                  agent: {
-                      // prompt: { prompt: "OPTIONAL_OVERRIDE_PROMPT" } // Not overriding
-                  },
-                  tts: {
-                      // voice_id: "YOUR_VOICE_ID_FROM_DASHBOARD_IF_NEEDED_OR_OVERRIDING" // Not overriding if using agent default
-                  },
-                  audio_output: {
-                      encoding: "ulaw",    // Match Twilio
-                      sample_rate: 8000   // Match Twilio
-                  }
-                },
-                dynamic_variables: {
-                  "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
-                }
-              };
-              console.log(`[!!! EL Setup @ ${Date.now()}] Preparing to send initialConfig with date: ${currentDateYYYYMMDD} and more complete audio_output config structure`);
-              try {
-                elevenLabsWs.send(JSON.stringify(initialConfig));
-                console.log(`[!!! EL Setup @ ${Date.now()}] Successfully SENT initialConfig.`);
-              } catch (sendError) {
-                console.error(`[!!! EL Setup @ ${Date.now()}] FAILED to send initialConfig:`, sendError);
-              }
-
+              // Buffer processing logic (remains the same)
               if (twilioAudioBuffer.length > 0) {
                 console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Attempting to send...`);
                 twilioAudioBuffer.forEach((audioChunk, index) => {
@@ -424,39 +438,31 @@ export default async function (fastify, opts) {
                 callSid = msg.start.callSid;
                 console.log(`[Twilio] Stream started: ${streamSid}, CallSid: ${callSid}`);
                 
-                callCustomParameters = {}; 
+                if (msg.start.customParameters && msg.start.customParameters.customParameters) {
+                    try {
+                        const encodedParams = msg.start.customParameters.customParameters;
+                        console.log("[!!! Debug Start Event] Attempting to decode customParameters (Base64):", encodedParams);
+                        const decodedJson = Buffer.from(encodedParams, 'base64').toString('utf-8');
+                        console.log("[!!! Debug Start Event] Decoded customParameters (JSON String):", decodedJson);
+                        decodedCustomParameters = JSON.parse(decodedJson);
+                        console.log("[!!! Debug Start Event] Parsed customParameters:", decodedCustomParameters);
+                    } catch (e) {
+                        console.error("[!!! Debug Start Event] Error decoding/parsing customParameters:", e);
+                        decodedCustomParameters = {}; 
+                    }
+                } else {
+                    console.warn("[!!! Debug Start Event] No customParameters.customParameters found in start event.");
+                    decodedCustomParameters = {};
+                }
+                
+                twilioStartEventProcessed = true; // Mark Twilio start event as processed
+                trySendInitialConfig(); // Attempt to send initialConfig
+
                 let isVoicemail = false;
                 let amdResult = 'unknown';
 
                 try {
-                  console.log("[!!! Debug Start Event] Attempting parameter extraction...");
-                  const paramsObjectFromTwilio = msg.start.customParameters;
-                  let base64ParamString = '';
-                  if (typeof paramsObjectFromTwilio === 'object' && paramsObjectFromTwilio !== null && typeof paramsObjectFromTwilio.customParameters === 'string') {
-                      base64ParamString = paramsObjectFromTwilio.customParameters;
-                  } else if (typeof paramsObjectFromTwilio === 'string') {
-                      base64ParamString = paramsObjectFromTwilio;
-                  }
-                  
-                  if (base64ParamString) { 
-                      try {
-                          const decodedParametersString = Buffer.from(base64ParamString, 'base64').toString('utf-8');
-                           if (decodedParametersString) { 
-                             try {
-                                  console.log("[!!! Debug Start Event] Attempting JSON parse of decoded params...");
-                                  callCustomParameters = JSON.parse(decodedParametersString);
-                                  console.log("[Twilio] Successfully parsed custom parameters:", callCustomParameters);
-                             } catch (parseError) {
-                                 console.error("[Twilio] JSON Parse Error:", parseError, "| String:", JSON.stringify(decodedParametersString));
-                             }
-                           }
-                      } catch (bufferError) {
-                          console.error("[Twilio] Buffer.from or toString Error:", bufferError);
-                      }
-                  } else {
-                    console.warn("[Twilio] base64ParamString is empty, skipping decode/parse.");
-                  }
-                   console.log("[!!! Debug Start Event] Checking AMD result...");
+                  console.log("[!!! Debug Start Event] Checking AMD result...");
                   if (callSid && amdResults[callSid]) {
                       const answeredBy = amdResults[callSid];
                       amdResult = answeredBy;

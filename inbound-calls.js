@@ -146,7 +146,8 @@ export function registerInboundRoutes(fastify) {
             type: "conversation_initiation_client_data",
             dynamic_variables: {
               // You can customize or add more dynamic variables here if needed
-              "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD
+              "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
+              "CALL_DIRECTION": "inbound_receptionist"
             }
           };
           try {
