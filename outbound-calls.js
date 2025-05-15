@@ -180,25 +180,37 @@ export default async function (fastify, opts) {
 
     if (!elevenLabsSignedUrl) {
         console.error("[!!! Debug TwiML] CRITICAL: elevenLabsSignedUrl is missing from query params. Cannot proceed with stream.");
-        // Send a TwiML response that perhaps says an error occurred or hangs up.
         const errorTwiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say>We are experiencing technical difficulties. Please try again later.</Say><Hangup/></Response>`;
         return reply.type("text/xml").send(errorTwiml);
     }
 
-    // --- Parameters are now passed individually ---
+    // Function to escape XML attribute values
+    const escapeXml = (unsafe) => {
+        if (typeof unsafe !== 'string') return '';
+        return unsafe.replace(/[<>&"']/g, function (c) {
+            switch (c) {
+                case '<': return '&lt;';
+                case '>': return '&gt;';
+                case '&': return '&amp;';
+                case '"': return '&quot;';
+                case '\'': return '&apos;';
+                default: return c;
+            }
+        });
+    };
+
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
         <Response>
           <Connect>
             <Stream url="wss://${request.headers.host}/outbound-media-stream">
-              <Parameter name="name" value="${name.replace(/[&<>'"]/g, '')}"/>
-              <Parameter name="number" value="${number.replace(/[&<>'"]/g, '')}"/>
-              <Parameter name="airtableRecordId" value="${(airtableRecordId || '').replace(/[&<>'"]/g, '')}"/>
-              <Parameter name="elevenLabsSignedUrl" value="${elevenLabsSignedUrl.replace(/[&<>'"]/g, '')}"/>
+              <Parameter name="name" value="${escapeXml(name)}"/>
+              <Parameter name="number" value="${escapeXml(number)}"/>
+              <Parameter name="airtableRecordId" value="${escapeXml(airtableRecordId || '')}"/>
+              <Parameter name="elevenLabsSignedUrl" value="${escapeXml(elevenLabsSignedUrl)}"/>
             </Stream>
           </Connect>
         </Response>`;
     
-    // --- Add TwiML Log 4: Log Final TwiML ---
     console.log("[!!! Debug TwiML] Sending TwiML response with individual parameters:", twimlResponse);
     reply.type("text/xml").send(twimlResponse);
   });
@@ -444,10 +456,10 @@ export default async function (fastify, opts) {
         };
 
         // --- Log before calling setupElevenLabs ---
-        console.log(`[!!! WS Handler @ ${Date.now()}] Attempting to call setupElevenLabs...`);
-        setupElevenLabs();
+        // console.log(`[!!! WS Handler @ ${Date.now()}] Attempting to call setupElevenLabs...`); // REMOVED PREMATURE CALL
+        // setupElevenLabs(); // REMOVED PREMATURE CALL
         // --- Log after calling setupElevenLabs (Note: async function call returns immediately) ---
-        console.log(`[!!! WS Handler @ ${Date.now()}] Call to setupElevenLabs initiated (runs asynchronously).`);
+        // console.log(`[!!! WS Handler @ ${Date.now()}] Call to setupElevenLabs initiated (runs asynchronously).`); // REMOVED PREMATURE CALL
 
         ws.on("message", async (message) => {
           try {
