@@ -68,9 +68,11 @@ export function registerInboundRoutes(fastify) {
       try {
         // Get authenticated WebSocket URL
         const signedUrl = await getSignedUrl();
+        console.log("[Server] Successfully fetched signed URL. Attempting to connect to ElevenLabs..."); // Log before WebSocket creation
 
         // Connect to ElevenLabs using the signed URL
         elevenLabsWs = new WebSocket(signedUrl);
+        console.log("[Server] new WebSocket(signedUrl) called. Assigning event handlers."); // Log after WebSocket creation
 
         // Handle open event for ElevenLabs WebSocket
         elevenLabsWs.on("open", () => {
@@ -236,6 +238,25 @@ export function registerInboundRoutes(fastify) {
           console.error("[Twilio] WebSocket error:", error);
           if (elevenLabsWs) {
             elevenLabsWs.close();
+          }
+        });
+
+        // Handle errors from ElevenLabs WebSocket
+        elevenLabsWs.on("error", (error) => {
+          console.error("[II] ElevenLabs WebSocket error:", error);
+          // Attempt to close Twilio connection if ElevenLabs errors out
+          if (connection && connection.socket && connection.socket.readyState === WebSocket.OPEN) {
+            connection.socket.close(1011, "ElevenLabs WebSocket error");
+          }
+        });
+
+        // Handle close event for ElevenLabs WebSocket
+        elevenLabsWs.on("close", (code, reason) => {
+          const reasonStr = reason ? reason.toString() : 'N/A';
+          console.log(`[II] ElevenLabs WebSocket disconnected. Code: ${code}, Reason: ${reasonStr}`);
+          // Attempt to close Twilio connection if ElevenLabs closes
+          if (connection && connection.socket && connection.socket.readyState === WebSocket.OPEN) {
+            connection.socket.close(1000, "ElevenLabs WebSocket closed");
           }
         });
 
