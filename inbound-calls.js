@@ -13,6 +13,7 @@ export function registerInboundRoutes(fastify) {
 
   // Helper function to get signed URL for authenticated conversations
   async function getSignedUrl() {
+    console.log("[getSignedUrl] Attempting to fetch signed URL.");
     try {
       const response = await fetch(
         `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${ELEVENLABS_AGENT_ID}`,
@@ -36,9 +37,10 @@ export function registerInboundRoutes(fastify) {
       }
 
       const data = await response.json();
+      console.log("[getSignedUrl] Successfully fetched and parsed signed URL:", data.signed_url);
       return data.signed_url;
     } catch (error) {
-      console.error("Error getting signed URL:", error.message);
+      console.error("[getSignedUrl] CRITICAL ERROR fetching or parsing signed URL:", error.message, error.stack);
       throw error;
     }
   }
@@ -59,7 +61,7 @@ export function registerInboundRoutes(fastify) {
   // WebSocket route for handling media streams from Twilio
   fastify.register(async (fastifyInstance) => {
     fastifyInstance.get("/media-stream", { websocket: true }, async (connection, req) => {
-      console.info("[Server] Twilio connected to media stream.");
+      console.info("[Server /media-stream] Entered WebSocket handler. Twilio attempting to connect.");
 
       let streamSid = null;
       let elevenLabsWs = null;
@@ -67,12 +69,21 @@ export function registerInboundRoutes(fastify) {
 
       try {
         // Get authenticated WebSocket URL
-        const signedUrl = await getSignedUrl();
-        console.log("[Server] Successfully fetched signed URL. Attempting to connect to ElevenLabs..."); // Log before WebSocket creation
+        console.log("[Server /media-stream] Attempting to call getSignedUrl()..."); 
+        const signedUrl = await getSignedUrl(); // This line should now be robustly logged by getSignedUrl itself
+        
+        // Check if signedUrl was actually obtained
+        if (!signedUrl) {
+          console.error("[Server /media-stream] CRITICAL: getSignedUrl() did not return a URL. Aborting ElevenLabs connection.");
+          throw new Error("Failed to obtain signed URL for ElevenLabs.");
+        }
+        
+        console.log(`[Server /media-stream] getSignedUrl() returned: ${signedUrl}. Proceeding to new WebSocket().`); 
 
         // Connect to ElevenLabs using the signed URL
+        console.log("[Server /media-stream] PRE: Calling new WebSocket(signedUrl)");
         elevenLabsWs = new WebSocket(signedUrl);
-        console.log("[Server] new WebSocket(signedUrl) called. Assigning event handlers."); // Log after WebSocket creation
+        console.log("[Server /media-stream] POST: new WebSocket(signedUrl) called. Assigning event handlers NOW."); 
 
         // Handle open event for ElevenLabs WebSocket
         elevenLabsWs.on("open", () => {
@@ -103,11 +114,12 @@ export function registerInboundRoutes(fastify) {
 
         // Handle messages from ElevenLabs
         elevenLabsWs.on("message", (data) => {
-          console.log("[II Raw Message]:", data.toString());
+          // Log the raw message first, as its type might vary
+          console.log("[II Raw Message]:", data.toString()); 
           try {
-            const message = JSON.parse(data);
+            const message = JSON.parse(data.toString()); // Ensure data is string before parsing
             
-            if (message.type === "audio" || message.type === "audio_event") {
+            if (message.type === "audio" || message.type === "audio_event") { // Covers both cases
               const audioPayload = message.audio_event?.audio_base_64 || message.audio?.chunk;
               if (audioPayload) {
                 const audioDataForTwilio = {
@@ -151,7 +163,7 @@ export function registerInboundRoutes(fastify) {
                 console.log("[II] Received other/unhandled message type from ElevenLabs:", message);
             }
           } catch (error) {
-            console.error("[II] Error parsing message from ElevenLabs:", error);
+            console.error("[II] Error parsing message from ElevenLabs:", error, "Raw data:", data.toString()); // Log raw data on error
           }
         });
 
@@ -182,45 +194,50 @@ export function registerInboundRoutes(fastify) {
 
         // Handle messages from Twilio
         connection.on("message", async (message) => {
-          console.log("[Twilio WS Message Received]: Type:", typeof message, "Is Buffer:", Buffer.isBuffer(message)); // Very early log
-          const rawMessageStr = message.toString(); // Get string representation for logging and parsing
+          const rawMessageStr = message.toString(); 
           console.log("[Twilio Raw Message]:", rawMessageStr); 
+          
+          // Try to parse JSON, but handle non-JSON messages gracefully if necessary
+          let data;
           try {
-            const data = JSON.parse(rawMessageStr); // Use the string representation
-            if (data.event === "start") {
-                streamSid = data.start.streamSid;
-                console.log(`[Twilio] Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}. Custom Parameters:`, data.start.customParameters);
-                // Process buffered audio/events from ElevenLabs now that we have streamSid
-                console.log(`[Server] Processing ${elevenLabsAudioBuffer.length} buffered messages from ElevenLabs.`);
-                elevenLabsAudioBuffer.forEach(bufferedMsg => {
-                  if (bufferedMsg.is_interruption) {
-                    sendClearToTwilio(connection, streamSid);
-                  } else if (bufferedMsg.audio_payload) {
-                    sendAudioToTwilio(bufferedMsg.audio_payload, connection, streamSid);
-                  }
-                });
-                elevenLabsAudioBuffer = []; // Clear buffer
-            } else if (data.event === "media") {
-                if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
-                  const audioMessage = {
-                    user_audio_chunk: Buffer.from(
-                      data.media.payload,
-                      "base64"
-                    ).toString("base64"),
-                  };
-                  elevenLabsWs.send(JSON.stringify(audioMessage));
-                  // console.log("[Twilio -> II] Sent user_audio_chunk to ElevenLabs."); // This log is frequent, can be noisy
+            data = JSON.parse(rawMessageStr); 
+          } catch (parseError) {
+            console.warn("[Twilio] Received non-JSON message or parse error. Raw:", rawMessageStr, "Error:", parseError);
+            return; // Skip further processing for non-JSON messages
+          }
+
+          // Now proceed with event handling if data is valid JSON
+          if (data.event === "start") {
+              streamSid = data.start.streamSid;
+              console.log(`[Twilio] Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}. Account SID: ${data.start.accountSid}. Tracks: ${data.start.tracks}. Media Format: ${JSON.stringify(data.start.mediaFormat)}. Custom Parameters:`, data.start.customParameters);
+              // Process buffered audio/events from ElevenLabs now that we have streamSid
+              console.log(`[Server] Processing ${elevenLabsAudioBuffer.length} buffered messages from ElevenLabs.`);
+              elevenLabsAudioBuffer.forEach(bufferedMsg => {
+                if (bufferedMsg.is_interruption) {
+                  sendClearToTwilio(connection, streamSid);
+                } else if (bufferedMsg.audio_payload) {
+                  sendAudioToTwilio(bufferedMsg.audio_payload, connection, streamSid);
                 }
-            } else if (data.event === "stop") {
-                 console.log(`[Twilio] Received stop event for stream: ${streamSid}. Raw stop data streamSid: ${data.streamSid}`);
-                if (elevenLabsWs) {
-                  elevenLabsWs.close();
-                }
-            } else {
-                console.log(`[Twilio] Received unhandled event: ${data.event}`, data); // Log the full data for unhandled events
-            }
-          } catch (error) {
-            console.error("[Twilio] Error processing message. Raw message was:", rawMessageStr, "Error:", error); // Enhanced error logging
+              });
+              elevenLabsAudioBuffer = []; // Clear buffer
+          } else if (data.event === "media") {
+              if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
+                const audioMessage = {
+                  user_audio_chunk: Buffer.from(
+                    data.media.payload,
+                    "base64"
+                  ).toString("base64"),
+                };
+                elevenLabsWs.send(JSON.stringify(audioMessage));
+                // console.log("[Twilio -> II] Sent user_audio_chunk to ElevenLabs."); // This log is frequent, can be noisy
+              }
+          } else if (data.event === "stop") {
+               console.log(`[Twilio] Received stop event for stream: ${streamSid}. Raw stop data streamSid: ${data.streamSid}`);
+              if (elevenLabsWs) {
+                elevenLabsWs.close();
+              }
+          } else {
+              console.log(`[Twilio] Received unhandled event: ${data.event}`, data); // Log the full data for unhandled events
           }
         });
 
@@ -261,11 +278,15 @@ export function registerInboundRoutes(fastify) {
         });
 
       } catch (error) {
-        console.error("[Server] Error initializing conversation:", error);
+        console.error("[Server /media-stream] CRITICAL ERROR in media-stream handler (before or during ElevenLabs WS setup):", error.message, error.stack);
         if (elevenLabsWs) {
           elevenLabsWs.close();
         }
-        connection.socket.close();
+        // Ensure Twilio connection is closed if we critical error before II WS setup
+        if (connection && connection.socket && connection.socket.readyState !== WebSocket.CLOSED) {
+            connection.socket.close(1011, "Server error during setup");
+            console.log("[Server /media-stream] Closed Twilio WebSocket due to critical setup error.");
+        }
       }
     });
   });
