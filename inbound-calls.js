@@ -74,6 +74,7 @@ export function registerInboundRoutes(fastify) {
 
         // Handle open event for ElevenLabs WebSocket
         elevenLabsWs.on("open", () => {
+          console.log("[II Inbound] ElevenLabs WebSocket OPEN event triggered!");
           console.log("[II] Connected to Conversational AI.");
           elevenLabsAudioBuffer = []; // Clear buffer on new connection
           // Send initial configuration data to ElevenLabs
@@ -103,20 +104,23 @@ export function registerInboundRoutes(fastify) {
           console.log("[II Raw Message]:", data.toString());
           try {
             const message = JSON.parse(data);
-            // No direct call to handleElevenLabsMessage here, logic moved into specific handlers
             
-            if (message.type === "audio" || message.type === "audio_event") { // Assuming audio_event also contains audio to send
-              const audioPayload = message.audio_event?.audio_base_64 || message.audio?.chunk; // Adapt based on actual structure
+            if (message.type === "audio" || message.type === "audio_event") {
+              const audioPayload = message.audio_event?.audio_base_64 || message.audio?.chunk;
               if (audioPayload) {
                 const audioDataForTwilio = {
-                  audio_payload: audioPayload, // Store the actual payload
-                  is_interruption: false // Mark if it's an interruption clear event
+                  audio_payload: audioPayload, 
+                  is_interruption: false 
                 };
                 if (streamSid) {
                   // If streamSid is known, send this audio and any buffered audio
                   sendAudioToTwilio(audioDataForTwilio.audio_payload, connection, streamSid);
-                  elevenLabsAudioBuffer.forEach(bufferedAudio => {
-                    sendAudioToTwilio(bufferedAudio.audio_payload, connection, streamSid);
+                  elevenLabsAudioBuffer.forEach(bufferedMsg => {
+                    if (bufferedMsg.is_interruption) {
+                        sendClearToTwilio(connection, streamSid);
+                    } else if (bufferedMsg.audio_payload) {
+                        sendAudioToTwilio(bufferedMsg.audio_payload, connection, streamSid);
+                    }
                   });
                   elevenLabsAudioBuffer = [];
                 } else {
@@ -124,37 +128,25 @@ export function registerInboundRoutes(fastify) {
                   elevenLabsAudioBuffer.push(audioDataForTwilio);
                 }
               } else {
-                console.log("[II] Received non-audio message or audio message without payload:", message);
-                // Handle other message types like pings, metadata directly if necessary
-                 if (message.type === "conversation_initiation_metadata") {
-                    console.info("[II] Received conversation initiation metadata.");
-                } else if (message.type === "ping" && message.ping_event?.event_id) {
-                    const pongResponse = { type: "pong", event_id: message.ping_event.event_id };
-                    elevenLabsWs.send(JSON.stringify(pongResponse));
-                    console.log("[II] Sent pong to ElevenLabs.");
-                } else if (message.type === "interruption") {
-                    // Handle interruption similarly to audio if it needs to be synced with streamSid
-                    if (streamSid) {
-                        connection.send(JSON.stringify({ event: "clear", streamSid }));
-                        console.log("[Server -> Twilio] Sent clear event to Twilio due to II interruption.");
-                    } else {
-                        console.warn("[II] Received interruption from ElevenLabs, but streamSid from Twilio is not available. Buffering interruption.");
-                        elevenLabsAudioBuffer.push({ is_interruption: true }); // Buffer a marker for interruption
-                    }
-                }
-
+                // This case is for type "audio" or "audio_event" but no audio payload.
+                console.log("[II] Received message of type 'audio' or 'audio_event' but without an audio payload:", message);
               }
-            } else {
-                 // Directly handle non-audio messages that don't depend on streamSid for Twilio
-                if (message.type === "conversation_initiation_metadata") {
-                    console.info("[II] Received conversation initiation metadata.");
-                } else if (message.type === "ping" && message.ping_event?.event_id) {
-                    const pongResponse = { type: "pong", event_id: message.ping_event.event_id };
-                    elevenLabsWs.send(JSON.stringify(pongResponse));
-                    console.log("[II] Sent pong to ElevenLabs.");
+            } else if (message.type === "conversation_initiation_metadata") {
+                console.info("[II] Received conversation initiation metadata.");
+            } else if (message.type === "ping" && message.ping_event?.event_id) {
+                const pongResponse = { type: "pong", event_id: message.ping_event.event_id };
+                elevenLabsWs.send(JSON.stringify(pongResponse));
+                console.log("[II] Sent pong to ElevenLabs.");
+            } else if (message.type === "interruption") {
+                if (streamSid) {
+                    sendClearToTwilio(connection, streamSid);
+                    // console.log("[Server -> Twilio] Sent clear event to Twilio due to II interruption."); // Covered by sendClearToTwilio
                 } else {
-                    console.log("[II] Received other message type from ElevenLabs:", message);
+                    console.warn("[II] Received interruption from ElevenLabs, but streamSid from Twilio is not available. Buffering interruption marker.");
+                    elevenLabsAudioBuffer.push({ is_interruption: true }); 
                 }
+            } else {
+                console.log("[II] Received other/unhandled message type from ElevenLabs:", message);
             }
           } catch (error) {
             console.error("[II] Error parsing message from ElevenLabs:", error);
@@ -189,9 +181,10 @@ export function registerInboundRoutes(fastify) {
         // Handle messages from Twilio
         connection.on("message", async (message) => {
           console.log("[Twilio WS Message Received]: Type:", typeof message, "Is Buffer:", Buffer.isBuffer(message)); // Very early log
-          console.log("[Twilio Raw Message]:", message.toString()); 
+          const rawMessageStr = message.toString(); // Get string representation for logging and parsing
+          console.log("[Twilio Raw Message]:", rawMessageStr); 
           try {
-            const data = JSON.parse(message);
+            const data = JSON.parse(rawMessageStr); // Use the string representation
             if (data.event === "start") {
                 streamSid = data.start.streamSid;
                 console.log(`[Twilio] Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}. Custom Parameters:`, data.start.customParameters);
@@ -214,18 +207,18 @@ export function registerInboundRoutes(fastify) {
                     ).toString("base64"),
                   };
                   elevenLabsWs.send(JSON.stringify(audioMessage));
-                  console.log("[Twilio -> II] Sent user_audio_chunk to ElevenLabs.");
+                  // console.log("[Twilio -> II] Sent user_audio_chunk to ElevenLabs."); // This log is frequent, can be noisy
                 }
             } else if (data.event === "stop") {
-                 console.log(`[Twilio] Received stop event for stream: ${streamSid}`);
+                 console.log(`[Twilio] Received stop event for stream: ${streamSid}. Raw stop data streamSid: ${data.streamSid}`);
                 if (elevenLabsWs) {
                   elevenLabsWs.close();
                 }
             } else {
-                console.log(`[Twilio] Received unhandled event: ${data.event}`);
+                console.log(`[Twilio] Received unhandled event: ${data.event}`, data); // Log the full data for unhandled events
             }
           } catch (error) {
-            console.error("[Twilio] Error processing message:", error);
+            console.error("[Twilio] Error processing message. Raw message was:", rawMessageStr, "Error:", error); // Enhanced error logging
           }
         });
 
