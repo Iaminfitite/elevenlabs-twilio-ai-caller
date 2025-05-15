@@ -64,9 +64,28 @@ export function registerInboundRoutes(fastify) {
       console.info("[Server /media-stream] Entered WebSocket handler. Twilio attempting to connect.");
 
       let streamSid = null;
+      let callSid = null; // Good to capture this as well
       let elevenLabsWs = null;
-      let elevenLabsAudioBuffer = []; // Buffer for early audio from ElevenLabs
-      let firstTwilioMessageProcessed = false; // <<< ADD THIS FLAG
+      let elevenLabsAudioBuffer = []; 
+      let firstTwilioMessageProcessed = false;
+      let streamSidEstablished = false; // <<< NEW FLAG: To track if streamSid has been set
+
+      // Helper function to process buffered ElevenLabs audio once streamSid is known
+      const processBufferedElevenLabsAudio = () => {
+        if (!streamSid) {
+          console.warn("[Server Buffer] Attempted to process buffered audio, but streamSid is STILL null. This shouldn't happen if called correctly.");
+          return;
+        }
+        console.log(`[Server Buffer] Processing ${elevenLabsAudioBuffer.length} buffered ElevenLabs messages for stream: ${streamSid}.`);
+        elevenLabsAudioBuffer.forEach(bufferedMsg => {
+          if (bufferedMsg.is_interruption) {
+            sendClearToTwilio(connection, streamSid);
+          } else if (bufferedMsg.audio_payload) {
+            sendAudioToTwilio(bufferedMsg.audio_payload, connection, streamSid);
+          }
+        });
+        elevenLabsAudioBuffer = []; // Clear buffer
+      };
 
       try {
         // Get authenticated WebSocket URL
@@ -195,7 +214,6 @@ export function registerInboundRoutes(fastify) {
 
         // Handle messages from Twilio
         connection.on("message", async (message) => {
-          // NEW LOG: Log message type and if it's a buffer, before anything else
           console.log(`[Twilio Message Intercept] Received a message. Type: ${typeof message}, Is Buffer: ${Buffer.isBuffer(message)}`);
           
           let rawMessageStr;
@@ -203,16 +221,13 @@ export function registerInboundRoutes(fastify) {
             rawMessageStr = message.toString(); 
           } catch (toStringError) {
             console.error("[Twilio Message Intercept] CRITICAL: message.toString() failed!", toStringError);
-            // It might be helpful to see what 'message' was if it's not too large or complex
-            // console.error("[Twilio Message Intercept] Message object that failed (details might be limited):", message);
-            return; // Can't proceed if toString fails
+            return; 
           }
 
           if (!firstTwilioMessageProcessed) {
-            console.log("[Twilio First Message Raw]:", rawMessageStr); // Log the very first raw message string
+            console.log("[Twilio First Message Raw]:", rawMessageStr); 
             firstTwilioMessageProcessed = true;
           }
-          // Keep the existing raw message log for all messages as well
           console.log("[Twilio Raw Message]:", rawMessageStr);
 
           let data;
@@ -223,47 +238,55 @@ export function registerInboundRoutes(fastify) {
             return; 
           }
 
-          // Log the event type BEFORE the conditional checks
           if (data && data.event) {
             console.log(`[Twilio Event Logger] Received event type: ${data.event}`);
           } else {
             console.log("[Twilio Event Logger] Received message without a data.event field.");
           }
 
-          if (data.event === "start") {
-              // Log first, then assign
-              console.log(`[Twilio] Attempting to process START event. Payload: ${JSON.stringify(data.start)}`); 
+          // Try to establish streamSid from the first relevant message (start or media)
+          if (!streamSidEstablished) {
+            if (data.event === "start" && data.start && data.start.streamSid) {
               streamSid = data.start.streamSid;
+              callSid = data.start.callSid; // Capture callSid from start event
+              streamSidEstablished = true;
+              console.log(`[Twilio Config] streamSid: ${streamSid} and callSid: ${callSid} ESTABLISHED from START event.`);
+              processBufferedElevenLabsAudio();
+            } else if (data.event === "media" && data.streamSid) {
+              streamSid = data.streamSid;
+              // callSid is not typically in media events, will be null until/unless a start event arrives
+              streamSidEstablished = true;
+              console.log(`[Twilio Config] streamSid: ${streamSid} ESTABLISHED from MEDIA event. callSid may follow if start event comes.`);
+              processBufferedElevenLabsAudio();
+            }
+          }
+
+          // Regular event handling
+          if (data.event === "start") {
+              console.log(`[Twilio] Processing START event. Payload: ${JSON.stringify(data.start)}`); 
+              // Ensure streamSid and callSid are updated if they weren't from a prior media event, or if this start is more complete
+              if (data.start && data.start.streamSid) streamSid = data.start.streamSid;
+              if (data.start && data.start.callSid) callSid = data.start.callSid;
+              
               if (streamSid) {
-                console.log(`[Twilio] SUCCESS: Stream started with ID: ${streamSid}. Call SID: ${data.start.callSid}. Account SID: ${data.start.accountSid}. Tracks: ${data.start.tracks}. Media Format: ${JSON.stringify(data.start.mediaFormat)}. Custom Parameters:`, data.start.customParameters);
+                console.log(`[Twilio] SUCCESS: Stream details from START event - streamSid: ${streamSid}, callSid: ${callSid}, Account SID: ${data.start.accountSid}, Tracks: ${data.start.tracks}, Media Format: ${JSON.stringify(data.start.mediaFormat)}. Custom Parameters:`, data.start.customParameters);
               } else {
                 console.error("[Twilio] ERROR: START event received, but data.start.streamSid is null or undefined. Full start data:", data.start);
               }
-              
-              console.log(`[Server] Processing ${elevenLabsAudioBuffer.length} buffered messages from ElevenLabs for stream: ${streamSid}.`);
-              elevenLabsAudioBuffer.forEach(bufferedMsg => {
-                if (bufferedMsg.is_interruption) {
-                  sendClearToTwilio(connection, streamSid);
-                } else if (bufferedMsg.audio_payload) {
-                  sendAudioToTwilio(bufferedMsg.audio_payload, connection, streamSid);
-                }
-              });
-              elevenLabsAudioBuffer = []; // Clear buffer
+              // Buffer processing is handled by the streamSidEstablished logic now
           } else if (data.event === "media") {
-              // Add a log to confirm media event is recognized by the conditional
-              // console.log("[Twilio Event Logger] Processing MEDIA event."); 
               if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
-                const audioMessage = {
-                  user_audio_chunk: Buffer.from(
-                    data.media.payload,
-                    "base64"
-                  ).toString("base64"),
-                };
-                elevenLabsWs.send(JSON.stringify(audioMessage));
-                // console.log("[Twilio -> II] Sent user_audio_chunk to ElevenLabs."); // This log is frequent, can be noisy
+                if (!streamSid) {
+                  // This case should be less frequent now, but good to log if media arrives before streamSid is established by any means
+                  console.warn("[Twilio -> II] Media event received, but streamSid still not established. Holding off on forwarding this chunk.");
+                } else {
+                  const audioMessage = {
+                    user_audio_chunk: Buffer.from(data.media.payload, "base64").toString("base64"),
+                  };
+                  elevenLabsWs.send(JSON.stringify(audioMessage));
+                }
               }
           } else if (data.event === "stop") {
-              // Add a log to confirm stop event is recognized by the conditional
               console.log("[Twilio Event Logger] Processing STOP event."); 
               console.log(`[Twilio] Received stop event. Local streamSid: ${streamSid}. Event streamSid: ${data.streamSid}. Call SID: ${data.stop.callSid}. Account SID: ${data.stop.accountSid}.`);
               if (elevenLabsWs) {
