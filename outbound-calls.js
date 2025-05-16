@@ -232,17 +232,17 @@ export default async function (fastify, opts) {
         const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
         let isElevenLabsWsOpen = false;
         let twilioAudioBuffer = [];
-        // let setupStartTime = null; // We keep this for inside setupElevenLabs // Not actively used, can be removed if desired
-
-        // New state flags for initialConfig logic
+        
         let twilioStartEventProcessed = false;
         let initialConfigSent = false;
+        let initialConfigSentTimestamp = 0; // For latency tracking
+        let firstAgentAudioPacketLogged = {}; // Tracks if first agent audio is logged {callSid: true}
 
         ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
         const trySendInitialConfig = () => {
-          if (isElevenLabsWsOpen && twilioStartEventProcessed && !initialConfigSent) {
-            console.log(`[!!! EL Config] Conditions met. isElevenLabsWsOpen: ${isElevenLabsWsOpen}, twilioStartEventProcessed: ${twilioStartEventProcessed}, initialConfigSent: ${initialConfigSent}`);
+          if (isElevenLabsWsOpen && twilioStartEventProcessed && !initialConfigSent && callSid) { // Ensure callSid is available
+            console.log(`[!!! EL Config] Conditions met for ${callSid}. isElevenLabsWsOpen: ${isElevenLabsWsOpen}, twilioStartEventProcessed: ${twilioStartEventProcessed}, initialConfigSent: ${initialConfigSent}`);
             const today = new Date();
             const year = today.getFullYear();
             const month = String(today.getMonth() + 1).padStart(2, '0');
@@ -265,11 +265,12 @@ export default async function (fastify, opts) {
                 ...(decodedCustomParameters || {})
               }
             };
-            console.log(`[!!! EL Config] Preparing to send initialConfig: ${JSON.stringify(initialConfig)}`);
+            console.log(`[!!! EL Config] Preparing to send initialConfig for ${callSid}: ${JSON.stringify(initialConfig)}`);
             try {
               elevenLabsWs.send(JSON.stringify(initialConfig));
-              console.log(`[!!! EL Config] Successfully SENT initialConfig.`);
-              initialConfigSent = true; // Mark as sent
+              initialConfigSentTimestamp = Date.now(); // Record timestamp
+              console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Successfully SENT initialConfig for ${callSid}.`);
+              initialConfigSent = true; 
             } catch (sendError) {
               console.error(`[!!! EL Config] FAILED to send initialConfig:`, sendError);
             }
@@ -331,6 +332,14 @@ export default async function (fastify, opts) {
             elevenLabsWs.on("message", (data) => {
               try {
                 const message = JSON.parse(data);
+
+                // Log first audio packet from ElevenLabs
+                if ((message.type === "audio" || message.type === "audio_event") && callSid && !firstAgentAudioPacketLogged[callSid]) {
+                  const now = Date.now();
+                  const latency = initialConfigSentTimestamp > 0 ? now - initialConfigSentTimestamp : -1;
+                  console.log(`[!!! EL First Audio @ ${now}] Received first audio packet from ElevenLabs for ${callSid}. Type: ${message.type}. Latency since initialConfig: ${latency}ms.`);
+                  firstAgentAudioPacketLogged[callSid] = true;
+                }
 
                 switch (message.type) {
                   case "conversation_initiation_metadata":
@@ -559,6 +568,10 @@ export default async function (fastify, opts) {
                   }
                   
                   if (callSid) {
+                    // Clean up tracking for this callSid
+                    if (firstAgentAudioPacketLogged[callSid]) {
+                        delete firstAgentAudioPacketLogged[callSid];
+                    }
                     try {
                         console.log(`[Twilio] Attempting to update call ${callSid} status to completed...`);
                         await twilioClient.calls(callSid).update({ status: "completed" });
@@ -585,6 +598,9 @@ export default async function (fastify, opts) {
 
         ws.on("close", (code, reason) => {
           console.log(`[!!! Twilio WS Closed]: Code=${code}, Reason=${reason ? reason.toString() : 'N/A'}`);
+          if (callSid && firstAgentAudioPacketLogged[callSid]) { // Clean up on Twilio WS close too
+            delete firstAgentAudioPacketLogged[callSid];
+          }
           if (elevenLabsWs?.readyState === WebSocket.OPEN) {
              console.log("[ElevenLabs] Closing WS connection because Twilio WS closed.");
              elevenLabsWs.close();
