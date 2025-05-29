@@ -44,9 +44,15 @@ class ElevenLabsConnectionPool {
 
   async initialize() {
     console.log(`[ConnectionPool] Initializing pool with ${this.poolSize} connections...`);
+    const connectionPromises = [];
     for (let i = 0; i < this.poolSize; i++) {
-      this.createConnection();
+      connectionPromises.push(this.createConnection());
     }
+    // Don't wait for all connections - start processing immediately
+    Promise.allSettled(connectionPromises).then(results => {
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      console.log(`[ConnectionPool] Initialized with ${successful}/${this.poolSize} connections ready`);
+    });
   }
 
   async createConnection() {
@@ -61,7 +67,7 @@ class ElevenLabsConnectionPool {
       const connectionPromise = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error("Connection timeout"));
-        }, 5000);
+        }, 3000); // Reduced timeout
 
         ws.on("open", () => {
           clearTimeout(timeout);
@@ -83,8 +89,8 @@ class ElevenLabsConnectionPool {
         ws.on("close", () => {
           console.log("[ConnectionPool] Connection closed, creating replacement");
           this.removeConnection(ws);
-          // Create replacement connection
-          setTimeout(() => this.createConnection(), 1000);
+          // Create replacement connection more aggressively
+          setTimeout(() => this.createConnection(), 500); // Faster replacement
         });
       });
 
@@ -92,6 +98,8 @@ class ElevenLabsConnectionPool {
       return connectionPromise;
     } catch (error) {
       console.error("[ConnectionPool] Error creating connection:", error);
+      // Retry connection creation
+      setTimeout(() => this.createConnection(), 1000);
     }
   }
 
@@ -151,11 +159,24 @@ class ElevenLabsConnectionPool {
     const ws = this.inUseConnections.get(callSid);
     if (ws) {
       this.inUseConnections.delete(callSid);
+      
+      // Only return to pool if connection is still healthy
       if (ws.readyState === WebSocket.OPEN) {
-        // Clean up the connection state before returning to pool
-        this.resetConnectionState(ws);
-        this.availableConnections.push(ws);
-        console.log(`[ConnectionPool] Released connection from ${callSid} back to pool`);
+        try {
+          // Clean up the connection state before returning to pool
+          this.resetConnectionState(ws);
+          
+          // Send a test message to ensure connection is still responsive
+          ws.send(JSON.stringify({ type: "ping", event_id: "pool_health_check" }));
+          
+          this.availableConnections.push(ws);
+          console.log(`[ConnectionPool] Released connection from ${callSid} back to pool (${this.availableConnections.length} available)`);
+        } catch (error) {
+          console.log(`[ConnectionPool] Connection from ${callSid} failed health check, discarding`);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close();
+          }
+        }
       } else {
         console.log(`[ConnectionPool] Connection from ${callSid} was closed, not returning to pool`);
       }
@@ -211,8 +232,8 @@ class ElevenLabsConnectionPool {
   }
 }
 
-// Initialize the connection pool
-const elevenLabsPool = new ElevenLabsConnectionPool(3);
+// Initialize the connection pool with larger size for better performance
+const elevenLabsPool = new ElevenLabsConnectionPool(5);
 
 // Pre-generated greeting cache for instant playback
 class GreetingCache {
@@ -578,6 +599,8 @@ export default async function (fastify, opts) {
         const elevenLabsWsOpenPromise = new Promise(resolve => { resolveElevenLabsWsOpen = resolve; });
         let isElevenLabsWsOpen = false;
         let twilioAudioBuffer = [];
+        let audioBatchBuffer = []; // For batch processing
+        let audioBatchTimeout = null;
         
         let twilioStartEventProcessed = false;
         let initialConfigSent = false;
@@ -586,42 +609,28 @@ export default async function (fastify, opts) {
 
         ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
-        const trySendInitialConfig = () => {
-          if (isElevenLabsWsOpen && twilioStartEventProcessed && !initialConfigSent && callSid) { // Ensure callSid is available
-            console.log(`[!!! EL Config] Conditions met for ${callSid}. isElevenLabsWsOpen: ${isElevenLabsWsOpen}, twilioStartEventProcessed: ${twilioStartEventProcessed}, initialConfigSent: ${initialConfigSent}`);
-            const today = new Date();
-            const year = today.getFullYear();
-            const month = String(today.getMonth() + 1).padStart(2, '0');
-            const day = String(today.getDate()).padStart(2, '0');
-            const currentDateYYYYMMDD = `${year}-${month}-${day}`;
-
-            const initialConfig = {
-              type: "conversation_initiation_client_data",
-              conversation_config_override: {
-                agent: {},
-                tts: {},
-                audio_output: {
-                    encoding: "ulaw",
-                    sample_rate: 8000
-                }
-              },
-              dynamic_variables: {
-                "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
-                "CALL_DIRECTION": "outbound",
-                ...(decodedCustomParameters || {})
-              }
-            };
-            console.log(`[!!! EL Config] Preparing to send initialConfig for ${callSid}: ${JSON.stringify(initialConfig)}`);
+        // Batch audio processing for better performance
+        const flushAudioBatch = () => {
+          if (audioBatchBuffer.length > 0 && elevenLabsWs?.readyState === WebSocket.OPEN) {
             try {
-              elevenLabsWs.send(JSON.stringify(initialConfig));
-              initialConfigSentTimestamp = Date.now(); // Record timestamp
-              console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Successfully SENT initialConfig for ${callSid}.`);
-              initialConfigSent = true; 
-            } catch (sendError) {
-              console.error(`[!!! EL Config] FAILED to send initialConfig:`, sendError);
+              // Send multiple audio chunks in one message for efficiency
+              const batchMessage = {
+                user_audio_chunks: audioBatchBuffer
+              };
+              elevenLabsWs.send(JSON.stringify(batchMessage));
+              audioBatchBuffer = [];
+            } catch (error) {
+              console.error("[Audio Batch] Error sending batch:", error);
+              // Fallback to individual sending
+              audioBatchBuffer.forEach(chunk => {
+                try {
+                  elevenLabsWs.send(JSON.stringify({ user_audio_chunk: chunk }));
+                } catch (e) {
+                  console.error("[Audio Batch] Error sending individual chunk:", e);
+                }
+              });
+              audioBatchBuffer = [];
             }
-          } else {
-            console.log(`[!!! EL Config] Conditions NOT YET MET or already sent. isElevenLabsWsOpen: ${isElevenLabsWsOpen}, twilioStartEventProcessed: ${twilioStartEventProcessed}, initialConfigSent: ${initialConfigSent}`);
           }
         };
 
@@ -636,7 +645,42 @@ export default async function (fastify, opts) {
             isElevenLabsWsOpen = true;
             if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
             
-            trySendInitialConfig(); // Attempt to send initialConfig
+            // Send initial config immediately for pooled connections
+            if (callSid && !initialConfigSent) {
+              const today = new Date();
+              const year = today.getFullYear();
+              const month = String(today.getMonth() + 1).padStart(2, '0');
+              const day = String(today.getDate()).padStart(2, '0');
+              const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+
+              const initialConfig = {
+                type: "conversation_initiation_client_data",
+                conversation_config_override: {
+                  agent: {},
+                  tts: {
+                    model: "eleven_turbo_v2_5" // Use fastest model for response speed
+                  },
+                  audio_output: {
+                      encoding: "ulaw",
+                      sample_rate: 8000
+                  }
+                },
+                dynamic_variables: {
+                  "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
+                  "CALL_DIRECTION": "outbound",
+                  ...(decodedCustomParameters || {})
+                }
+              };
+              
+              try {
+                elevenLabsWs.send(JSON.stringify(initialConfig));
+                initialConfigSentTimestamp = Date.now();
+                initialConfigSent = true;
+                console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] IMMEDIATELY sent initialConfig for ${callSid} (${initialConfigSentTimestamp - wsConnectEndTime}ms after connection).`);
+              } catch (sendError) {
+                console.error(`[!!! EL Config] FAILED to send immediate initialConfig:`, sendError);
+              }
+            }
 
             // Set up message handlers for this specific call
             elevenLabsWs.on("message", (data) => {
@@ -678,9 +722,12 @@ export default async function (fastify, opts) {
                         ws.send(JSON.stringify(audioData));
                       }
                     } else {
-                      console.log(
-                        "[ElevenLabs] Received audio but no StreamSid yet"
-                      );
+                      // Buffer audio if streamSid not ready yet
+                      if (!streamSid && message.audio?.chunk) {
+                        if (!this.pendingAudioBuffer) this.pendingAudioBuffer = [];
+                        this.pendingAudioBuffer.push(message.audio.chunk);
+                        console.log("[ElevenLabs] Buffering audio - StreamSid not ready");
+                      }
                     }
                     break;
 
@@ -821,11 +868,26 @@ export default async function (fastify, opts) {
                 console.log("[!!! Debug Start Event] Extracted Custom Parameters:", decodedCustomParameters);
                 console.log(`[ConnectionPool] Pool status at call start: ${JSON.stringify(elevenLabsPool.getPoolStatus())}`);
 
-                // Call setupElevenLabs using the connection pool
+                // Call setupElevenLabs using the connection pool - this will send config immediately
                 setupElevenLabs(callSid); 
                 
                 twilioStartEventProcessed = true; // Mark Twilio start event as processed
-                trySendInitialConfig(); // Attempt to send initialConfig, will proceed if EL WS also opens
+
+                // Flush any pending audio that was buffered while streamSid wasn't available
+                if (this.pendingAudioBuffer && this.pendingAudioBuffer.length > 0) {
+                  console.log(`[!!! Audio Flush] Sending ${this.pendingAudioBuffer.length} buffered audio packets to Twilio`);
+                  this.pendingAudioBuffer.forEach((audioChunk, index) => {
+                    const audioData = {
+                      event: "media",
+                      streamSid,
+                      media: {
+                        payload: audioChunk,
+                      },
+                    };
+                    ws.send(JSON.stringify(audioData));
+                  });
+                  this.pendingAudioBuffer = [];
+                }
 
                 let isVoicemail = false;
                 let amdResult = 'unknown';
@@ -850,7 +912,7 @@ export default async function (fastify, opts) {
                       console.log("[ElevenLabs] Waiting for WebSocket connection to open...");
                       await Promise.race([
                           elevenLabsWsOpenPromise,
-                          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for ElevenLabs WS open")), 3000)) // Reduced timeout since pool should be faster
+                          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for ElevenLabs WS open")), 2000)) // Further reduced timeout
                       ]);
                   }
                   
@@ -862,11 +924,15 @@ export default async function (fastify, opts) {
                 break;
 
               case "media":
-                console.log("[!!! Debug Media] Media received from Twilio. Checking EL WS state...");
+                // Reduce logging overhead - only log occasionally for debugging
+                if (Math.random() < 0.01) { // Log only 1% of media events
+                  console.log("[!!! Debug Media Sample] Media forwarding active...");
+                }
+                
                 const audioPayloadBase64 = msg.media.payload;
                 
                 if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                  console.log("[!!! Debug Media] EL WS is OPEN. Attempting to forward audio...");
+                  // Use immediate sending for low latency
                   try {
                     const audioMessage = { user_audio_chunk: audioPayloadBase64 };
                     elevenLabsWs.send(JSON.stringify(audioMessage));
@@ -874,8 +940,13 @@ export default async function (fastify, opts) {
                      console.error("[!!! Debug Media] Error sending live audio chunk:", mediaSendError);
                   }
                 } else {
-                   console.log("[!!! Debug Media] EL WS is NOT OPEN. Buffering audio chunk.");
-                   twilioAudioBuffer.push(audioPayloadBase64);
+                   // Buffer audio more efficiently
+                   if (twilioAudioBuffer.length < 100) { // Prevent memory issues
+                     twilioAudioBuffer.push(audioPayloadBase64);
+                   }
+                   if (twilioAudioBuffer.length === 1) { // Log only first buffered chunk
+                     console.log("[!!! Debug Media] EL WS not ready, buffering audio...");
+                   }
                 }
                 break;
 
