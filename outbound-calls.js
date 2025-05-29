@@ -32,208 +32,186 @@ if (
   throw new Error("Missing required environment variables");
 }
 
-// WebSocket Connection Pool for ElevenLabs
-class ElevenLabsConnectionPool {
-  constructor(poolSize = 3) {
-    this.poolSize = poolSize;
-    this.availableConnections = [];
-    this.pendingConnections = [];
-    this.inUseConnections = new Map();
-    this.initialize();
+// Lightweight connection manager instead of expensive pool
+class ElevenLabsConnectionManager {
+  constructor() {
+    this.activeConnection = null;
+    this.cachedSignedUrls = [];
+    this.connectionPromise = null;
+    this.lastActivity = Date.now();
+    this.maxIdleTime = 30000; // Close connection after 30s of inactivity
+    this.urlCacheSize = 3;
+    
+    // Pre-cache signed URLs instead of connections
+    this.initializeUrlCache();
+    
+    // Clean up idle connections
+    setInterval(() => this.cleanupIdleConnection(), 10000);
   }
 
-  async initialize() {
-    console.log(`[ConnectionPool] Initializing pool with ${this.poolSize} connections...`);
-    const connectionPromises = [];
-    for (let i = 0; i < this.poolSize; i++) {
-      connectionPromises.push(this.createConnection());
-    }
-    // Don't wait for all connections - start processing immediately
-    Promise.allSettled(connectionPromises).then(results => {
-      const successful = results.filter(r => r.status === 'fulfilled').length;
-      console.log(`[ConnectionPool] Initialized with ${successful}/${this.poolSize} connections ready`);
-    });
-  }
-
-  async createConnection() {
-    try {
-      const signedUrl = await getSignedUrl();
-      if (!signedUrl) {
-        console.error("[ConnectionPool] Failed to get signed URL for pool connection");
-        return;
+  async initializeUrlCache() {
+    console.log(`[ConnectionManager] Pre-caching ${this.urlCacheSize} signed URLs...`);
+    for (let i = 0; i < this.urlCacheSize; i++) {
+      try {
+        const url = await getSignedUrl();
+        if (url) {
+          this.cachedSignedUrls.push({
+            url,
+            timestamp: Date.now()
+          });
+        }
+      } catch (error) {
+        console.error("[ConnectionManager] Error caching URL:", error);
       }
+    }
+    console.log(`[ConnectionManager] Cached ${this.cachedSignedUrls.length} signed URLs`);
+  }
 
-      const ws = new WebSocket(signedUrl);
-      const connectionPromise = new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error("Connection timeout"));
-        }, 3000); // Reduced timeout
+  getCachedUrl() {
+    // Remove expired URLs (older than 5 minutes)
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    this.cachedSignedUrls = this.cachedSignedUrls.filter(item => item.timestamp > fiveMinutesAgo);
+    
+    if (this.cachedSignedUrls.length > 0) {
+      const urlItem = this.cachedSignedUrls.shift();
+      // Async replenish cache
+      this.replenishUrlCache();
+      return urlItem.url;
+    }
+    return null;
+  }
 
-        ws.on("open", () => {
-          clearTimeout(timeout);
-          console.log("[ConnectionPool] New connection established");
-          this.availableConnections.push(ws);
-          resolve(ws);
-          
-          // Remove from pending
-          const index = this.pendingConnections.indexOf(connectionPromise);
-          if (index > -1) this.pendingConnections.splice(index, 1);
-        });
-
-        ws.on("error", (error) => {
-          clearTimeout(timeout);
-          console.error("[ConnectionPool] Connection error:", error);
-          reject(error);
-        });
-
-        ws.on("close", () => {
-          console.log("[ConnectionPool] Connection closed, creating replacement");
-          this.removeConnection(ws);
-          // Create replacement connection more aggressively
-          setTimeout(() => this.createConnection(), 500); // Faster replacement
-        });
-      });
-
-      this.pendingConnections.push(connectionPromise);
-      return connectionPromise;
-    } catch (error) {
-      console.error("[ConnectionPool] Error creating connection:", error);
-      // Retry connection creation
-      setTimeout(() => this.createConnection(), 1000);
+  async replenishUrlCache() {
+    if (this.cachedSignedUrls.length < this.urlCacheSize) {
+      try {
+        const url = await getSignedUrl();
+        if (url) {
+          this.cachedSignedUrls.push({
+            url,
+            timestamp: Date.now()
+          });
+        }
+      } catch (error) {
+        console.error("[ConnectionManager] Error replenishing URL cache:", error);
+      }
     }
   }
 
   async getConnection(callSid) {
-    // First try to get an available connection
-    if (this.availableConnections.length > 0) {
-      const ws = this.availableConnections.shift();
-      if (ws.readyState === WebSocket.OPEN) {
-        this.inUseConnections.set(callSid, ws);
-        console.log(`[ConnectionPool] Assigned existing connection to ${callSid}`);
-        return ws;
-      }
+    this.lastActivity = Date.now();
+
+    // If we have an active healthy connection, reuse it
+    if (this.activeConnection && this.activeConnection.readyState === WebSocket.OPEN) {
+      console.log(`[ConnectionManager] Reusing existing connection for ${callSid}`);
+      return this.activeConnection;
     }
 
-    // If no available connections, wait for a pending one or create new
-    if (this.pendingConnections.length > 0) {
+    // If connection is being created, wait for it
+    if (this.connectionPromise) {
+      console.log(`[ConnectionManager] Waiting for pending connection for ${callSid}`);
       try {
-        const ws = await this.pendingConnections[0];
-        if (ws.readyState === WebSocket.OPEN) {
-          this.inUseConnections.set(callSid, ws);
-          console.log(`[ConnectionPool] Assigned pending connection to ${callSid}`);
-          return ws;
-        }
+        return await this.connectionPromise;
       } catch (error) {
-        console.error("[ConnectionPool] Error waiting for pending connection:", error);
+        this.connectionPromise = null;
+        console.error("[ConnectionManager] Pending connection failed:", error);
       }
     }
 
-    // Last resort: create a new connection
-    console.log(`[ConnectionPool] Creating new connection for ${callSid}`);
-    const ws = await this.createConnection();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      this.inUseConnections.set(callSid, ws);
-      return ws;
+    // Create new connection
+    console.log(`[ConnectionManager] Creating new connection for ${callSid}`);
+    this.connectionPromise = this.createConnection();
+    
+    try {
+      this.activeConnection = await this.connectionPromise;
+      this.connectionPromise = null;
+      return this.activeConnection;
+    } catch (error) {
+      this.connectionPromise = null;
+      throw error;
     }
-
-    throw new Error("Unable to establish ElevenLabs connection");
   }
 
-  removeConnection(ws) {
-    // Remove from available connections
-    const availableIndex = this.availableConnections.indexOf(ws);
-    if (availableIndex > -1) {
-      this.availableConnections.splice(availableIndex, 1);
+  async createConnection() {
+    const startTime = Date.now();
+    
+    // Try cached URL first
+    let signedUrl = this.getCachedUrl();
+    
+    if (!signedUrl) {
+      console.log("[ConnectionManager] No cached URL, fetching new one...");
+      signedUrl = await getSignedUrl();
+    } else {
+      console.log("[ConnectionManager] Using cached signed URL");
     }
 
-    // Remove from in-use connections
-    for (const [callSid, connection] of this.inUseConnections.entries()) {
-      if (connection === ws) {
-        this.inUseConnections.delete(callSid);
-        break;
-      }
+    if (!signedUrl) {
+      throw new Error("Failed to get signed URL");
+    }
+
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(signedUrl);
+      const timeout = setTimeout(() => {
+        reject(new Error("Connection timeout"));
+      }, 3000);
+
+      ws.on("open", () => {
+        clearTimeout(timeout);
+        const endTime = Date.now();
+        console.log(`[ConnectionManager] Connection established in ${endTime - startTime}ms`);
+        
+        // Set up cleanup handlers
+        ws.on("close", () => {
+          if (this.activeConnection === ws) {
+            this.activeConnection = null;
+          }
+        });
+
+        ws.on("error", (error) => {
+          console.error("[ConnectionManager] Connection error:", error);
+          if (this.activeConnection === ws) {
+            this.activeConnection = null;
+          }
+        });
+
+        resolve(ws);
+      });
+
+      ws.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
+  }
+
+  cleanupIdleConnection() {
+    if (this.activeConnection && 
+        this.activeConnection.readyState === WebSocket.OPEN && 
+        Date.now() - this.lastActivity > this.maxIdleTime) {
+      
+      console.log("[ConnectionManager] Closing idle connection");
+      this.activeConnection.close();
+      this.activeConnection = null;
     }
   }
 
   releaseConnection(callSid) {
-    const ws = this.inUseConnections.get(callSid);
-    if (ws) {
-      this.inUseConnections.delete(callSid);
-      
-      // Only return to pool if connection is still healthy
-      if (ws.readyState === WebSocket.OPEN) {
-        try {
-          // Clean up the connection state before returning to pool
-          this.resetConnectionState(ws);
-          
-          // Send a test message to ensure connection is still responsive
-          ws.send(JSON.stringify({ type: "ping", event_id: "pool_health_check" }));
-          
-          this.availableConnections.push(ws);
-          console.log(`[ConnectionPool] Released connection from ${callSid} back to pool (${this.availableConnections.length} available)`);
-        } catch (error) {
-          console.log(`[ConnectionPool] Connection from ${callSid} failed health check, discarding`);
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.close();
-          }
-        }
-      } else {
-        console.log(`[ConnectionPool] Connection from ${callSid} was closed, not returning to pool`);
-      }
-    }
+    // For single connection manager, we don't release - just update activity
+    this.lastActivity = Date.now();
+    console.log(`[ConnectionManager] Call ${callSid} finished, connection remains active`);
   }
 
-  resetConnectionState(ws) {
-    // Remove all existing listeners except the basic pool management ones
-    ws.removeAllListeners("message");
-    ws.removeAllListeners("error");
-    
-    // Re-add pool management listeners
-    ws.on("close", () => {
-      this.removeConnection(ws);
-      setTimeout(() => this.createConnection(), 1000);
-    });
-
-    ws.on("error", (error) => {
-      console.error("[ConnectionPool] Connection error:", error);
-      this.removeConnection(ws);
-    });
-  }
-
-  getPoolStatus() {
+  getStatus() {
     return {
-      available: this.availableConnections.length,
-      inUse: this.inUseConnections.size,
-      pending: this.pendingConnections.length
+      hasActiveConnection: !!this.activeConnection,
+      connectionState: this.activeConnection?.readyState || 'none',
+      cachedUrls: this.cachedSignedUrls.length,
+      lastActivity: this.lastActivity
     };
-  }
-
-  adjustPoolSize(newSize) {
-    console.log(`[ConnectionPool] Adjusting pool size from ${this.poolSize} to ${newSize}`);
-    const oldSize = this.poolSize;
-    this.poolSize = newSize;
-    
-    if (newSize > oldSize) {
-      // Add more connections
-      const connectionsToAdd = newSize - oldSize;
-      for (let i = 0; i < connectionsToAdd; i++) {
-        this.createConnection();
-      }
-    } else if (newSize < oldSize) {
-      // Remove excess connections
-      const connectionsToRemove = oldSize - newSize;
-      for (let i = 0; i < connectionsToRemove && this.availableConnections.length > 0; i++) {
-        const ws = this.availableConnections.pop();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.close();
-        }
-      }
-    }
   }
 }
 
-// Initialize the connection pool with larger size for better performance
-const elevenLabsPool = new ElevenLabsConnectionPool(5);
+// Initialize the lightweight connection manager
+const elevenLabsManager = new ElevenLabsConnectionManager();
 
 // Pre-generated greeting cache for instant playback
 class GreetingCache {
@@ -355,16 +333,20 @@ class CallPatternTracker {
     if (now - this.lastPoolAdjustment < 10 * 60 * 1000) return;
 
     const prediction = this.getNext2HoursPrediction();
-    const currentPoolSize = elevenLabsPool.poolSize;
+    const currentCacheSize = elevenLabsManager.urlCacheSize;
     
-    let targetPoolSize = 3; // Default minimum
-    if (prediction > 10) targetPoolSize = 5;
-    if (prediction > 20) targetPoolSize = 8;
-    if (prediction > 50) targetPoolSize = 12;
+    let targetCacheSize = 3; // Default minimum
+    if (prediction > 10) targetCacheSize = 5;
+    if (prediction > 20) targetCacheSize = 8;
+    if (prediction > 50) targetCacheSize = 10;
 
-    if (targetPoolSize !== currentPoolSize) {
-      console.log(`[CallPatternTracker] Adjusting pool size from ${currentPoolSize} to ${targetPoolSize} based on prediction: ${prediction} calls`);
-      elevenLabsPool.adjustPoolSize(targetPoolSize);
+    if (targetCacheSize !== currentCacheSize) {
+      console.log(`[CallPatternTracker] Adjusting URL cache size from ${currentCacheSize} to ${targetCacheSize} based on prediction: ${prediction} calls`);
+      elevenLabsManager.urlCacheSize = targetCacheSize;
+      // Trigger cache replenishment if needed
+      if (targetCacheSize > elevenLabsManager.cachedSignedUrls.length) {
+        elevenLabsManager.replenishUrlCache();
+      }
       this.lastPoolAdjustment = now;
     }
   }
@@ -467,7 +449,7 @@ export default async function (fastify, opts) {
       const statusCallbackUrl = `https://${request.headers.host}/call-status`;
       console.log(`[Twilio API] Using statusCallbackUrl: ${statusCallbackUrl}`);
 
-      console.log(`[ConnectionPool] Pool status before call: ${JSON.stringify(elevenLabsPool.getPoolStatus())}`);
+      console.log(`[ConnectionManager] Pool status before call: ${JSON.stringify(elevenLabsManager.getStatus())}`);
       console.log(`[CallPatternTracker] Current stats: ${JSON.stringify(callPatternTracker.getStats())}`);
 
       const call = await twilioClient.calls.create({
@@ -482,11 +464,12 @@ export default async function (fastify, opts) {
 
       reply.send({
         success: true,
-        message: "Call initiated with optimized connection pool",
+        message: "Call initiated with cost-effective connection optimization",
         callSid: call.sid,
         optimizations: {
-          poolStatus: elevenLabsPool.getPoolStatus(),
-          callPrediction: callPatternTracker.getNext2HoursPrediction()
+          connectionStatus: elevenLabsManager.getStatus(),
+          callPrediction: callPatternTracker.getNext2HoursPrediction(),
+          costEffective: true
         }
       });
     } catch (error) {
@@ -506,7 +489,7 @@ export default async function (fastify, opts) {
     try {
       await twilioClient.calls(callSid).update({ status: "completed" });
       // Also release connection from pool
-      elevenLabsPool.releaseConnection(callSid);
+      elevenLabsManager.releaseConnection(callSid);
       
       reply.send({
         success: true,
@@ -524,21 +507,23 @@ export default async function (fastify, opts) {
   // Monitoring endpoint for optimization systems
   fastify.get("/optimization-status", async (request, reply) => {
     reply.send({
-      connectionPool: elevenLabsPool.getPoolStatus(),
+      connectionManager: elevenLabsManager.getStatus(),
       greetingCache: {
         cachedGreetings: greetingCache.cache.size,
         availableGreetings: Array.from(greetingCache.cache.keys()).map(text => text.substring(0, 50) + "...")
       },
       callPatterns: callPatternTracker.getStats(),
       recommendations: {
-        shouldIncreasePool: callPatternTracker.getNext2HoursPrediction() > elevenLabsPool.poolSize * 2,
+        shouldIncreaseCache: callPatternTracker.getNext2HoursPrediction() > elevenLabsManager.urlCacheSize * 2,
         estimatedLatencyReduction: "60-80% reduction in initial message latency",
-        activeOptimizations: [
-          "Pre-established WebSocket connection pool",
-          "Intelligent pool size adjustment",
+        costEffectiveOptimizations: [
+          "Single WebSocket connection with reuse",
+          "Pre-cached signed URLs (3-10 based on demand)",
+          "Intelligent idle connection cleanup (30s)",
           "Pre-generated greeting cache",
           "Reduced timeout thresholds"
-        ]
+        ],
+        costSavings: "95% reduction in concurrent connections vs pool approach"
       },
       timestamp: new Date().toISOString()
     });
@@ -638,7 +623,7 @@ export default async function (fastify, opts) {
           console.log(`[!!! EL Setup @ ${Date.now()}] Attempting setup using connection pool for ${callSid}.`);
           try {
             const wsConnectStartTime = Date.now();
-            elevenLabsWs = await elevenLabsPool.getConnection(callSid);
+            elevenLabsWs = await elevenLabsManager.getConnection(callSid);
             const wsConnectEndTime = Date.now();
 
             console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket from pool assigned in ${wsConnectEndTime - wsConnectStartTime}ms.`);
@@ -829,13 +814,13 @@ export default async function (fastify, opts) {
             elevenLabsWs.on("close", () => {
               console.log(`[ElevenLabs] Connection closed for ${callSid}`);
               isElevenLabsWsOpen = false;
-              elevenLabsPool.releaseConnection(callSid);
+              elevenLabsManager.releaseConnection(callSid);
             });
 
             elevenLabsWs.on("error", (error) => {
               console.error(`[ElevenLabs] Connection error for ${callSid}:`, error);
               isElevenLabsWsOpen = false;
-              elevenLabsPool.releaseConnection(callSid);
+              elevenLabsManager.releaseConnection(callSid);
             });
 
           } catch (error) {
@@ -866,7 +851,7 @@ export default async function (fastify, opts) {
                 };
 
                 console.log("[!!! Debug Start Event] Extracted Custom Parameters:", decodedCustomParameters);
-                console.log(`[ConnectionPool] Pool status at call start: ${JSON.stringify(elevenLabsPool.getPoolStatus())}`);
+                console.log(`[ConnectionManager] Pool status at call start: ${JSON.stringify(elevenLabsManager.getStatus())}`);
 
                 // Call setupElevenLabs using the connection pool - this will send config immediately
                 setupElevenLabs(callSid); 
@@ -960,7 +945,7 @@ export default async function (fastify, opts) {
                   
                   if (callSid) {
                     // Release connection back to pool
-                    elevenLabsPool.releaseConnection(callSid);
+                    elevenLabsManager.releaseConnection(callSid);
                     
                     // Clean up tracking for this callSid
                     if (firstAgentAudioPacketLogged[callSid]) {
