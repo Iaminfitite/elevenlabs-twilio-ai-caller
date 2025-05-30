@@ -608,6 +608,7 @@ export default async function (fastify, opts) {
         let twilioAudioBuffer = [];
         let audioBatchBuffer = []; // For batch processing
         let audioBatchTimeout = null;
+        let pendingAudioBuffer = []; // Fix: Define at proper scope
         
         let twilioStartEventProcessed = false;
         let initialConfigSent = false;
@@ -652,7 +653,7 @@ export default async function (fastify, opts) {
             isElevenLabsWsOpen = true;
             if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
             
-            // Send initial config immediately for pooled connections
+            // Send initial config immediately for pooled connections with dynamic variables
             if (callSid && !initialConfigSent) {
               const today = new Date();
               const year = today.getFullYear();
@@ -660,7 +661,7 @@ export default async function (fastify, opts) {
               const day = String(today.getDate()).padStart(2, '0');
               const currentDateYYYYMMDD = `${year}-${month}-${day}`;
 
-              // Get customer name from decoded parameters or use default
+              // Get the name from decoded parameters or use default
               const customerName = decodedCustomParameters?.name || "Valued Customer";
 
               const initialConfig = {
@@ -697,6 +698,7 @@ export default async function (fastify, opts) {
                 initialConfigSentTimestamp = Date.now();
                 initialConfigSent = true;
                 console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] IMMEDIATELY sent initialConfig with personalized first message for "${customerName}" for ${callSid} (${initialConfigSentTimestamp - wsConnectEndTime}ms after connection).`);
+                
               } catch (sendError) {
                 console.error(`[!!! EL Config] FAILED to send immediate initialConfig:`, sendError);
               }
@@ -744,7 +746,6 @@ export default async function (fastify, opts) {
                     } else {
                       // Buffer audio if streamSid not ready yet
                       if (!streamSid && message.audio?.chunk) {
-                        if (!pendingAudioBuffer) pendingAudioBuffer = [];
                         pendingAudioBuffer.push(message.audio.chunk);
                         console.log("[ElevenLabs] Buffering audio - StreamSid not ready");
                       }
@@ -1008,68 +1009,16 @@ export default async function (fastify, opts) {
 
               default:
                 console.log(`[Twilio] Unhandled event: ${msg.event}`);
+                break;
             }
-          } catch (error) { 
-             console.error("[!!! Twilio Outer Message Handler Error]:", error, "| Raw Message:", message);
+          } catch (messageError) {
+            console.error(`[!!! Twilio Outer Message Handler Error]: ${messageError.message}`, messageError, "| Raw Message:", message);
           }
         });
 
-        ws.on("close", (code, reason) => {
-          console.log(`[!!! Twilio WS Closed]: Code=${code}, Reason=${reason ? reason.toString() : 'N/A'}`);
-          if (callSid && firstAgentAudioPacketLogged[callSid]) { // Clean up on Twilio WS close too
-            delete firstAgentAudioPacketLogged[callSid];
-          }
-          if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-             console.log("[ElevenLabs] Closing WS connection because Twilio WS closed.");
-             elevenLabsWs.close();
-          }
-          isElevenLabsWsOpen = false;
-        });
-
-      } catch (handlerError) {
-          console.error(`[!!! WS Handler CRITICAL ERROR] Error within main WebSocket handler setup:`, handlerError);
-          // Optionally close the WebSocket if a critical setup error occurs
-          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-              ws.close(1011, "Internal Server Error during WS setup");
-          }
-      }
-      // --- End wrap --- 
-    }
-  );
-
-  // Route to receive Call Status updates from Twilio
-  fastify.post("/call-status", async (request, reply) => {
-    const { 
-        CallSid, 
-        CallStatus, 
-        AnsweredBy,
-        Duration, 
-        Timestamp 
-    } = request.body;
-    
-    console.log(`[Call Status] CallSid: ${CallSid}, Status: ${CallStatus}, AnsweredBy: ${AnsweredBy}, Duration: ${Duration}`);
-
-    const machineResponses = ["machine_start", "machine_end_beep", "machine_end_silence", "machine_end_other", "fax"];
-    if (AnsweredBy && machineResponses.includes(AnsweredBy)) {
-      console.log(`[AMD] Machine detected (${AnsweredBy}) for CallSid: ${CallSid}. Ending call.`);
-      try {
-        await twilioClient.calls(CallSid).update({ status: "completed" });
-        console.log(`[AMD] Successfully sent command to end call ${CallSid}`);
       } catch (error) {
-        console.error(`[AMD] Error trying to end call ${CallSid} after machine detection:`, error);
+        console.error("[!!! WS Handler Error]:", error);
       }
-    } else if (AnsweredBy && AnsweredBy === "human") {
-       console.log(`[AMD] Human detected for CallSid: ${CallSid}. Call continues.`);
-    } else if (AnsweredBy) {
-       console.log(`[AMD] Received AnsweredBy status '${AnsweredBy}' for CallSid: ${CallSid}. Call continues.`);
-    }
-
-    reply.status(200).send();
-  });
-
-  // Add basic error handler for the whole Fastify instance
-  fastify.setErrorHandler(function (error, request, reply) {
-    console.error("[!!! Fastify Global Error Handler]:", error);
-    reply.status(500).send({ ok: false, error: 'Internal Server Error' });
+    });
   });
 }
