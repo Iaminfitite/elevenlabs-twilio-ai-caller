@@ -271,10 +271,13 @@ class GreetingCache {
     try {
       const greetingText = `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`;
       
-      // Use a default ElevenLabs voice instead of agent ID for TTS
-      const voiceId = "pNInz6obpgDQGcFmaJgB"; // Adam voice - default ElevenLabs voice
+      // IMPORTANT: Use the same agent ID as the main conversation, not a separate voice
+      // For now, disable caching to prevent audio format conflicts and use real-time generation
+      console.log(`[GreetingCache] Skipping pre-generation for "${customerName}" - using real-time for audio consistency`);
+      return false; // Disable caching temporarily to fix audio issues
       
-      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`, {
+      /* COMMENTED OUT until audio format issues are resolved
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_AGENT_ID}/stream`, {
         method: 'POST',
         headers: {
           'Accept': 'audio/mpeg',
@@ -290,7 +293,7 @@ class GreetingCache {
             style: 0.1, // Lower for faster generation
             use_speaker_boost: false // Disable for speed
           },
-          output_format: "ulaw_8000" // Match Twilio format
+          output_format: "ulaw_8000" // Match Twilio format exactly
         })
       });
 
@@ -311,6 +314,7 @@ class GreetingCache {
         console.error(`[GreetingCache] Failed to generate greeting for "${customerName}": ${response.status} ${response.statusText} - ${errorText}`);
         return false;
       }
+      */
     } catch (error) {
       console.error(`[GreetingCache] Error generating greeting for "${customerName}":`, error);
       return false;
@@ -839,7 +843,40 @@ export default async function (fastify, opts) {
                       // Get customer name from decoded parameters or use default
                       const customerName = decodedCustomParameters?.name || "Valued Customer";
 
-                      // LATENCY OPTIMIZATION: Check for pre-generated greeting first
+                      // OPTIMIZATION DISABLED TEMPORARILY: Check for pre-generated greeting first
+                      // Using real-time generation to ensure audio format consistency and proper agent connection
+                      console.log(`[!!! REAL-TIME FLOW] Using real-time TTS for ${customerName} to ensure agent connection`);
+                      
+                      const initialConfig = {
+                        type: "conversation_initiation_client_data",
+                        conversation_config_override: {
+                          agent: {
+                            first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
+                            system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful."
+                          },
+                          audio_output: {
+                            encoding: "ulaw",
+                            sample_rate: 8000
+                          }
+                        },
+                        dynamic_variables: {
+                          "CUSTOMER_NAME": customerName,
+                          "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
+                        }
+                      };
+                      
+                      try {
+                        console.log(`[!!! EL Config Debug] Sending config for agent connection:`, JSON.stringify(initialConfig, null, 2));
+                        elevenLabsWs.send(JSON.stringify(initialConfig));
+                        initialConfigSentTimestamp = Date.now();
+                        initialConfigSent = true;
+                        console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Sent initialConfig for "${customerName}" for ${callSid}`);
+                        
+                      } catch (sendError) {
+                        console.error(`[!!! EL Config] FAILED to send initialConfig:`, sendError);
+                      }
+
+                      /* CACHED FLOW DISABLED TEMPORARILY
                       const cachedGreeting = greetingCache.getCachedPersonalizedGreeting(customerName);
                       
                       if (cachedGreeting && streamSid) {
@@ -923,6 +960,7 @@ export default async function (fastify, opts) {
                           console.error(`[!!! EL Config] FAILED to send initialConfig after metadata:`, sendError);
                         }
                       }
+                      */
                     }
                     break;
 
