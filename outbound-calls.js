@@ -684,10 +684,17 @@ export default async function (fastify, opts) {
                       const initialConfig = {
                         type: "conversation_initiation_client_data",
                         conversation_config_override: {
+                          agent: {
+                            first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`
+                          },
                           audio_output: {
                             encoding: "ulaw",
                             sample_rate: 8000
                           }
+                        },
+                        dynamic_variables: {
+                          "CUSTOMER_NAME": customerName,
+                          "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
                         }
                       };
                       
