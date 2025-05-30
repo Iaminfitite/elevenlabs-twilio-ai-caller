@@ -812,10 +812,12 @@ export default async function (fastify, opts) {
             const wsConnectEndTime = Date.now();
 
             console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket from pool assigned in ${wsConnectEndTime - wsConnectStartTime}ms.`);
+            
+            // IMPORTANT: Set the flag immediately when connection is ready
             isElevenLabsWsOpen = true;
             if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
             
-            // Set up message handlers FIRST before sending config
+            // Set up message handlers FIRST before any other operations
             elevenLabsWs.on("message", (data) => {
               try {
                 const message = JSON.parse(data);
@@ -830,167 +832,36 @@ export default async function (fastify, opts) {
 
                 switch (message.type) {
                   case "conversation_initiation_metadata":
-                    console.log("[ElevenLabs] Received initiation metadata - sending config now");
-                    
-                    // Send config AFTER receiving initiation metadata
-                    if (callSid && !initialConfigSent) {
-                      const today = new Date();
-                      const year = today.getFullYear();
-                      const month = String(today.getMonth() + 1).padStart(2, '0');
-                      const day = String(today.getDate()).padStart(2, '0');
-                      const currentDateYYYYMMDD = `${year}-${month}-${day}`;
-
-                      // Get customer name from decoded parameters or use default
-                      const customerName = decodedCustomParameters?.name || "Valued Customer";
-
-                      // OPTIMIZATION DISABLED TEMPORARILY: Check for pre-generated greeting first
-                      // Using real-time generation to ensure audio format consistency and proper agent connection
-                      console.log(`[!!! REAL-TIME FLOW] Using real-time TTS for ${customerName} to ensure agent connection`);
-                      
-                      const initialConfig = {
-                        type: "conversation_initiation_client_data",
-                        conversation_config_override: {
-                          agent: {
-                            first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
-                            system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful."
-                          },
-                          audio_output: {
-                            encoding: "ulaw",
-                            sample_rate: 8000
-                          }
-                        },
-                        dynamic_variables: {
-                          "CUSTOMER_NAME": customerName,
-                          "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
-                        }
-                      };
-                      
-                      try {
-                        console.log(`[!!! EL Config Debug] Sending config for agent connection:`, JSON.stringify(initialConfig, null, 2));
-                        elevenLabsWs.send(JSON.stringify(initialConfig));
-                        initialConfigSentTimestamp = Date.now();
-                        initialConfigSent = true;
-                        console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Sent initialConfig for "${customerName}" for ${callSid}`);
-                        
-                      } catch (sendError) {
-                        console.error(`[!!! EL Config] FAILED to send initialConfig:`, sendError);
-                      }
-
-                      /* CACHED FLOW DISABLED TEMPORARILY
-                      const cachedGreeting = greetingCache.getCachedPersonalizedGreeting(customerName);
-                      
-                      if (cachedGreeting && streamSid) {
-                        console.log(`[!!! INSTANT AUDIO @ ${Date.now()}] Using cached greeting for ${customerName} - ZERO TTS latency!`);
-                        
-                        // Send cached audio immediately - NO TTS generation delay!
-                        const audioData = {
-                          event: "media",
-                          streamSid,
-                          media: {
-                            payload: cachedGreeting.audio,
-                          },
-                        };
-                        ws.send(JSON.stringify(audioData));
-                        
-                        // Mark config as sent to prevent normal flow
-                        initialConfigSent = true;
-                        initialConfigSentTimestamp = Date.now();
-                        
-                        console.log(`[!!! CACHED AUDIO SUCCESS @ ${initialConfigSentTimestamp}] Delivered instant greeting for ${customerName}`);
-                        
-                        // Still send config for ongoing conversation, but first message is already playing
-                        const initialConfig = {
-                          type: "conversation_initiation_client_data",
-                          conversation_config_override: {
-                            agent: {
-                              first_message: "", // Empty since we already sent audio
-                              system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. The conversation has already started with your greeting. Be conversational and helpful."
-                            },
-                            audio_output: {
-                              encoding: "ulaw",
-                              sample_rate: 8000
-                            }
-                          },
-                          dynamic_variables: {
-                            "CUSTOMER_NAME": customerName,
-                            "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
-                          }
-                        };
-                        
-                        try {
-                          elevenLabsWs.send(JSON.stringify(initialConfig));
-                          console.log(`[!!! CACHED FLOW] Sent follow-up config for ${customerName} after instant audio delivery`);
-                        } catch (configError) {
-                          console.error(`[!!! CACHED FLOW] Error sending follow-up config:`, configError);
-                        }
-                        
-                      } else {
-                        // Fallback to normal flow if no cached greeting available
-                        console.log(`[!!! NORMAL FLOW] No cached greeting for ${customerName}, using real-time TTS`);
-                        
-                        // Trigger cache generation for future calls with this name
-                        greetingCache.ensureGreetingCached(customerName);
-                        
-                        const initialConfig = {
-                          type: "conversation_initiation_client_data",
-                          conversation_config_override: {
-                            agent: {
-                              first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
-                              system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful."
-                            },
-                            audio_output: {
-                              encoding: "ulaw",
-                              sample_rate: 8000
-                            }
-                          },
-                          dynamic_variables: {
-                            "CUSTOMER_NAME": customerName,
-                            "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
-                          }
-                        };
-                        
-                        try {
-                          console.log(`[!!! EL Config Debug] Sending config AFTER metadata:`, JSON.stringify(initialConfig, null, 2));
-                          elevenLabsWs.send(JSON.stringify(initialConfig));
-                          initialConfigSentTimestamp = Date.now();
-                          initialConfigSent = true;
-                          console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Sent initialConfig after receiving metadata for "${customerName}" for ${callSid}`);
-                          
-                        } catch (sendError) {
-                          console.error(`[!!! EL Config] FAILED to send initialConfig after metadata:`, sendError);
-                        }
-                      }
-                      */
-                    }
+                    console.log("[ElevenLabs] Received initiation metadata - system is ready for config");
                     break;
 
                   case "audio":
+                  case "audio_event":
                     if (streamSid) {
+                      let audioChunk = null;
                       if (message.audio?.chunk) {
-                        const audioData = {
-                          event: "media",
-                          streamSid,
-                          media: {
-                            payload: message.audio.chunk,
-                          },
-                        };
-                        ws.send(JSON.stringify(audioData));
+                        audioChunk = message.audio.chunk;
                       } else if (message.audio_event?.audio_base_64) {
+                        audioChunk = message.audio_event.audio_base_64;
+                      }
+                      
+                      if (audioChunk) {
                         const audioData = {
                           event: "media",
                           streamSid,
                           media: {
-                            payload: message.audio_event.audio_base_64,
+                            payload: audioChunk,
                           },
                         };
                         ws.send(JSON.stringify(audioData));
                       }
                     } else {
                       // Buffer audio if streamSid not ready yet
-                      if (!streamSid && message.audio?.chunk) {
+                      if (!streamSid && (message.audio?.chunk || message.audio_event?.audio_base_64)) {
                         if (!pendingAudioBuffer) pendingAudioBuffer = [];
-                        pendingAudioBuffer.push(message.audio.chunk);
-                        console.log("[ElevenLabs] Buffering audio - StreamSid not ready");
+                        const audioChunk = message.audio?.chunk || message.audio_event?.audio_base_64;
+                        pendingAudioBuffer.push(audioChunk);
+                        console.log(`[ElevenLabs] Buffering audio - StreamSid not ready. Buffer size: ${pendingAudioBuffer.length}`);
                       }
                     }
                     break;
@@ -1070,9 +941,9 @@ export default async function (fastify, opts) {
               }
             });
 
-            // Buffer processing logic (remains the same)
+            // Send buffered audio immediately after handlers are set up
             if (twilioAudioBuffer.length > 0) {
-              console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Attempting to send...`);
+              console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Sending immediately...`);
               twilioAudioBuffer.forEach((audioChunk, index) => {
                 try {
                   const audioMessage = { user_audio_chunk: audioChunk };
@@ -1087,6 +958,40 @@ export default async function (fastify, opts) {
               twilioAudioBuffer = [];
             } else {
                 console.log("[!!! Debug EL Setup] EL WS Open: No buffered audio chunks to send.");
+            }
+
+            // IMMEDIATE CONFIG SENDING - Don't wait for metadata to reduce latency
+            if (callSid && !initialConfigSent && decodedCustomParameters) {
+              const customerName = decodedCustomParameters?.name || "Valued Customer";
+              
+              console.log(`[!!! IMMEDIATE CONFIG] Sending config immediately for ${customerName} to reduce latency`);
+              
+              const initialConfig = {
+                type: "conversation_initiation_client_data",
+                conversation_config_override: {
+                  agent: {
+                    first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
+                    system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful. Start the conversation immediately."
+                  },
+                  audio_output: {
+                    encoding: "ulaw",
+                    sample_rate: 8000
+                  }
+                },
+                dynamic_variables: {
+                  "CUSTOMER_NAME": customerName,
+                  "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
+                }
+              };
+              
+              try {
+                elevenLabsWs.send(JSON.stringify(initialConfig));
+                initialConfigSentTimestamp = Date.now();
+                initialConfigSent = true;
+                console.log(`[!!! IMMEDIATE CONFIG @ ${initialConfigSentTimestamp}] Sent immediate config for "${customerName}" for ${callSid}`);
+              } catch (sendError) {
+                console.error(`[!!! IMMEDIATE CONFIG] FAILED to send immediate config:`, sendError);
+              }
             }
 
             // Handle cleanup when connection closes
@@ -1189,21 +1094,21 @@ export default async function (fastify, opts) {
                 break;
 
               case "media":
-                // Temporarily increase logging to debug user audio flow
-                if (Math.random() < 0.1) { // Log 10% of media events for debugging
+                // Ensure consistent audio forwarding with better logging
+                if (Math.random() < 0.05) { // Log 5% of media events for debugging
                   console.log(`[!!! Debug Media Sample] Media forwarding active - EL WS State: ${elevenLabsWs?.readyState}, isOpen: ${isElevenLabsWsOpen}`);
                 }
                 
                 const audioPayloadBase64 = msg.media.payload;
                 
-                if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                  // Use immediate sending for low latency
+                if (elevenLabsWs?.readyState === WebSocket.OPEN && isElevenLabsWsOpen) {
+                  // Send immediately for low latency
                   try {
                     const audioMessage = { user_audio_chunk: audioPayloadBase64 };
                     elevenLabsWs.send(JSON.stringify(audioMessage));
                     
-                    // Log every 50th successful send to confirm audio flow
-                    if (Math.random() < 0.02) {
+                    // Log every 100th successful send to confirm audio flow
+                    if (Math.random() < 0.01) {
                       console.log("[!!! Debug Media] Successfully sent user audio chunk to ElevenLabs");
                     }
                   } catch (mediaSendError) {
@@ -1211,15 +1116,15 @@ export default async function (fastify, opts) {
                   }
                 } else {
                    // Buffer audio more efficiently
-                   if (twilioAudioBuffer.length < 100) { // Prevent memory issues
+                   if (twilioAudioBuffer.length < 200) { // Increased buffer size
                      twilioAudioBuffer.push(audioPayloadBase64);
                    }
                    if (twilioAudioBuffer.length === 1) { // Log only first buffered chunk
                      console.log(`[!!! Debug Media] EL WS not ready, buffering audio... State: ${elevenLabsWs?.readyState}, isOpen flag: ${isElevenLabsWsOpen}`);
                    }
                    
-                   // Log every 100th buffered message to track ongoing buffering
-                   if (twilioAudioBuffer.length % 100 === 0) {
+                   // Log every 50th buffered message to track ongoing buffering
+                   if (twilioAudioBuffer.length % 50 === 0) {
                      console.log(`[!!! Debug Media] Still buffering - ${twilioAudioBuffer.length} chunks buffered. EL State: ${elevenLabsWs?.readyState}`);
                    }
                 }
