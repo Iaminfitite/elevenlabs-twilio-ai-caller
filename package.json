@@ -6,6 +6,7 @@
     "start": "node index.js",
     "dev": "node index.js",
     "setup": "node setup.js",
+    "local-test": "echo '\n🚀 Starting AI Caller locally...\n⚠️  For Twilio calls, you need ngrok or deploy to Railway\n📖 See RAILWAY_DEPLOYMENT.md for deployment guide\n' && node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {

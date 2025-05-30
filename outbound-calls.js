@@ -236,7 +236,7 @@ class GreetingCache {
       "Valued Customer", "Customer"
     ];
 
-    // Generate personalized greetings sequentially to avoid rate limits
+    // Generate personalized greetings sequentially with longer delays to avoid rate limits
     console.log(`[GreetingCache] Generating ${commonNames.length} personalized greetings sequentially...`);
     let successCount = 0;
     
@@ -248,12 +248,18 @@ class GreetingCache {
           successCount++;
         }
         
-        // Add delay between requests to respect rate limits
+        // Add longer delay between requests to respect rate limits (increased from 500ms to 1000ms)
         if (i < commonNames.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay
+          await new Promise(resolve => setTimeout(resolve, 1000)); // 1000ms delay
         }
       } catch (error) {
         console.error(`[GreetingCache] Error generating greeting for "${name}":`, error);
+        
+        // If we hit rate limits, wait longer before continuing
+        if (error.message && error.message.includes('429')) {
+          console.log(`[GreetingCache] Rate limit hit, waiting 5 seconds before continuing...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
       }
     }
     
@@ -566,7 +572,8 @@ export default async function (fastify, opts) {
           error: "For Twilio integration, you need to set PUBLIC_URL environment variable to your ngrok or public URL", 
           example: "PUBLIC_URL=https://your-ngrok-url.ngrok.io node index.js",
           currentHost: request.headers.host,
-          deploymentTip: "💡 Deploy to Railway for automatic public URL configuration!"
+          deploymentTip: "💡 Deploy to Railway for automatic public URL configuration!",
+          localTestingNote: "For local testing, you can either:\n1. Use ngrok to get a public tunnel URL\n2. Deploy to Railway for automatic public URL\n3. Test individual components without making actual calls"
         });
       }
       
