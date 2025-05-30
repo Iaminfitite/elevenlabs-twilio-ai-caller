@@ -653,45 +653,7 @@ export default async function (fastify, opts) {
             isElevenLabsWsOpen = true;
             if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
             
-            // Send initial config immediately for pooled connections
-            if (callSid && !initialConfigSent) {
-              const today = new Date();
-              const year = today.getFullYear();
-              const month = String(today.getMonth() + 1).padStart(2, '0');
-              const day = String(today.getDate()).padStart(2, '0');
-              const currentDateYYYYMMDD = `${year}-${month}-${day}`;
-
-              // Get customer name from decoded parameters or use default
-              const customerName = decodedCustomParameters?.name || "Valued Customer";
-
-              const initialConfig = {
-                type: "conversation_initiation_client_data",
-                conversation_config_override: {
-                  audio_output: {
-                    encoding: "ulaw",
-                    sample_rate: 8000
-                  }
-                },
-                dynamic_variables: {
-                  "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
-                  "CALL_DIRECTION": "outbound",
-                  "CUSTOMER_NAME": customerName,
-                  "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
-                }
-              };
-              
-              try {
-                console.log(`[!!! EL Config Debug] Sending config:`, JSON.stringify(initialConfig, null, 2));
-                elevenLabsWs.send(JSON.stringify(initialConfig));
-                initialConfigSentTimestamp = Date.now();
-                initialConfigSent = true;
-                console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] IMMEDIATELY sent initialConfig with personalized first message for "${customerName}" for ${callSid} (${initialConfigSentTimestamp - wsConnectEndTime}ms after connection).`);
-              } catch (sendError) {
-                console.error(`[!!! EL Config] FAILED to send immediate initialConfig:`, sendError);
-              }
-            }
-
-            // Set up message handlers for this specific call
+            // Set up message handlers FIRST before sending config
             elevenLabsWs.on("message", (data) => {
               try {
                 const message = JSON.parse(data);
@@ -706,7 +668,45 @@ export default async function (fastify, opts) {
 
                 switch (message.type) {
                   case "conversation_initiation_metadata":
-                    console.log("[ElevenLabs] Received initiation metadata");
+                    console.log("[ElevenLabs] Received initiation metadata - sending config now");
+                    
+                    // Send config AFTER receiving initiation metadata
+                    if (callSid && !initialConfigSent) {
+                      const today = new Date();
+                      const year = today.getFullYear();
+                      const month = String(today.getMonth() + 1).padStart(2, '0');
+                      const day = String(today.getDate()).padStart(2, '0');
+                      const currentDateYYYYMMDD = `${year}-${month}-${day}`;
+
+                      // Get customer name from decoded parameters or use default
+                      const customerName = decodedCustomParameters?.name || "Valued Customer";
+
+                      const initialConfig = {
+                        type: "conversation_initiation_client_data",
+                        conversation_config_override: {
+                          audio_output: {
+                            encoding: "ulaw",
+                            sample_rate: 8000
+                          }
+                        },
+                        dynamic_variables: {
+                          "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
+                          "CALL_DIRECTION": "outbound",
+                          "CUSTOMER_NAME": customerName,
+                          "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
+                        }
+                      };
+                      
+                      try {
+                        console.log(`[!!! EL Config Debug] Sending config AFTER metadata:`, JSON.stringify(initialConfig, null, 2));
+                        elevenLabsWs.send(JSON.stringify(initialConfig));
+                        initialConfigSentTimestamp = Date.now();
+                        initialConfigSent = true;
+                        console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Sent initialConfig after receiving metadata for "${customerName}" for ${callSid}`);
+                      } catch (sendError) {
+                        console.error(`[!!! EL Config] FAILED to send initialConfig after metadata:`, sendError);
+                      }
+                    }
                     break;
 
                   case "audio":
