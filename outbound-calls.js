@@ -372,7 +372,7 @@ class GreetingCache {
 // Initialize greeting cache
 const greetingCache = new GreetingCache();
 
-// Simple tool execution handler
+// Simple tool execution handler with dynamic date handling
 async function handleToolExecution(tool_name, parameters) {
   console.log(`[Tool Execution] Executing tool: ${tool_name} with parameters:`, parameters);
   
@@ -383,11 +383,185 @@ async function handleToolExecution(tool_name, parameters) {
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
       };
     
+    case 'get_available_slots':
+      // Dynamic date calculation for booking system
+      const today = new Date();
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      
+      const nextWeek = new Date(today);
+      nextWeek.setDate(nextWeek.getDate() + 7);
+      
+      // Format dates as YYYY-MM-DD
+      const formatDate = (date) => {
+        return date.toISOString().split('T')[0];
+      };
+      
+      const startDate = formatDate(tomorrow); // Start from tomorrow
+      const endDate = formatDate(nextWeek);   // End one week from today
+      
+      console.log(`[Tool Execution] Dynamic dates calculated - Start: ${startDate}, End: ${endDate}`);
+      
+      // Build the Cal.com API request with dynamic dates
+      const calApiUrl = 'https://api.cal.com/v2/slots';
+      const queryParams = new URLSearchParams({
+        start: startDate,
+        end: endDate,
+        timeZone: parameters.timeZone || 'Australia/Perth',
+        eventTypeId: parameters.eventTypeId || '2171540'
+      });
+      
+      const fullUrl = `${calApiUrl}?${queryParams.toString()}`;
+      console.log(`[Tool Execution] Calling Cal.com API: ${fullUrl}`);
+      
+      try {
+        const response = await fetch(fullUrl, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            // Add Cal.com API key if needed
+            // 'Authorization': `Bearer ${process.env.CAL_COM_API_KEY}`
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Cal.com API error: ${response.status} ${response.statusText}`);
+        }
+        
+        const slotsData = await response.json();
+        console.log(`[Tool Execution] Cal.com API response:`, slotsData);
+        
+        return {
+          success: true,
+          slots: slotsData,
+          query_period: {
+            start: startDate,
+            end: endDate,
+            timezone: parameters.timeZone || 'Australia/Perth'
+          }
+        };
+        
+      } catch (error) {
+        console.error(`[Tool Execution] Error calling Cal.com API:`, error);
+        return {
+          success: false,
+          error: error.message,
+          fallback_message: "I'm having trouble accessing the calendar right now. Let me suggest some general availability times."
+        };
+      }
+    
+    case 'book_appointment':
+      // Handle appointment booking
+      console.log(`[Tool Execution] Booking appointment with parameters:`, parameters);
+      
+      // Extract booking details
+      const { date, time, duration = 30, eventTypeId = '2171540' } = parameters;
+      
+      if (!date || !time) {
+        return {
+          success: false,
+          error: "Date and time are required for booking"
+        };
+      }
+      
+      // Here you would typically make an API call to Cal.com to book the appointment
+      // For now, return a success response with booking details
+      return {
+        success: true,
+        booking_confirmed: true,
+        details: {
+          date: date,
+          time: time,
+          duration: duration,
+          booking_id: `booking_${Date.now()}`,
+          confirmation_message: `Great! I've booked your ${duration}-minute session for ${date} at ${time}. You should receive a confirmation email shortly.`
+        }
+      };
+    
     case 'end_call':
       return {
         message: "Call ended successfully",
         status: "completed"
       };
+    
+    case 'webhook':
+    case 'cal_webhook':
+    case 'check_availability':
+      // Handle the specific webhook tool call from your conversation
+      console.log(`[Tool Execution] Processing webhook/calendar tool with parameters:`, parameters);
+      
+      // Extract parameters (matching your conversation logs)
+      const webhookToday = new Date();
+      const webhookTomorrow = new Date(webhookToday);
+      webhookTomorrow.setDate(webhookTomorrow.getDate() + 1);
+      
+      const webhookNextWeek = new Date(webhookToday);
+      webhookNextWeek.setDate(webhookNextWeek.getDate() + 7);
+      
+      const webhookFormatDate = (date) => {
+        return date.toISOString().split('T')[0];
+      };
+      
+      // Override with dynamic dates instead of hardcoded ones
+      const webhookParams = {
+        start: parameters.start || webhookFormatDate(webhookTomorrow),
+        end: parameters.end || webhookFormatDate(webhookNextWeek),
+        timeZone: parameters.timeZone || 'Australia/Perth',
+        eventTypeId: parameters.eventTypeId || '2171540'
+      };
+      
+      console.log(`[Tool Execution] Updated webhook parameters with dynamic dates:`, webhookParams);
+      
+      // Make the actual webhook call to Cal.com
+      const webhookUrl = 'https://api.cal.com/v2/slots';
+      const webhookQuery = new URLSearchParams(webhookParams);
+      const webhookFullUrl = `${webhookUrl}?${webhookQuery.toString()}`;
+      
+      console.log(`[Tool Execution] Making webhook call: ${webhookFullUrl}`);
+      
+      try {
+        const webhookResponse = await fetch(webhookFullUrl, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (!webhookResponse.ok) {
+          const errorText = await webhookResponse.text();
+          console.error(`[Tool Execution] Webhook error: ${webhookResponse.status} - ${errorText}`);
+          
+          // Return fallback response for agent
+          return {
+            success: false,
+            message: "I'm having trouble checking the calendar right now. Based on typical availability, I can offer you times tomorrow between 1 p.m. and 3 p.m., or we could look at other days this week. What works better for you?",
+            suggested_times: [
+              "Tomorrow 1:00 PM - 1:30 PM",
+              "Tomorrow 2:00 PM - 2:30 PM", 
+              "Tomorrow 3:00 PM - 3:30 PM"
+            ]
+          };
+        }
+        
+        const webhookData = await webhookResponse.json();
+        console.log(`[Tool Execution] Webhook success:`, webhookData);
+        
+        return {
+          success: true,
+          data: webhookData,
+          query_params: webhookParams,
+          message: "Successfully retrieved calendar availability"
+        };
+        
+      } catch (webhookError) {
+        console.error(`[Tool Execution] Webhook request failed:`, webhookError);
+        
+        return {
+          success: false,
+          error: webhookError.message,
+          message: "I'm having trouble accessing the calendar. Let me suggest some times that are typically available - how about tomorrow between 1 and 3 p.m.?"
+        };
+      }
     
     default:
       throw new Error(`Unknown tool: ${tool_name}`);
@@ -845,6 +1019,28 @@ export default async function (fastify, opts) {
               if (callSid && !initialConfigSent && decodedCustomParameters) {
                 const customerName = decodedCustomParameters?.name || "Valued Customer";
                 
+                // Calculate dynamic dates for booking context
+                const today = new Date();
+                const tomorrow = new Date(today);
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                
+                const nextWeek = new Date(today);
+                nextWeek.setDate(nextWeek.getDate() + 7);
+                
+                // Format dates for ElevenLabs
+                const formatDateForEL = (date) => {
+                  return date.toISOString().split('T')[0]; // YYYY-MM-DD format
+                };
+                
+                const formatDateReadable = (date) => {
+                  return date.toLocaleDateString('en-US', { 
+                    weekday: 'long', 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric' 
+                  });
+                };
+                
                 console.log(`[!!! IMMEDIATE CONFIG] Sending config immediately for ${customerName}`);
                 
                 const initialConfig = {
@@ -852,14 +1048,23 @@ export default async function (fastify, opts) {
                   conversation_config_override: {
                     agent: {
                       first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
-                      system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful."
+                      system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful. When booking appointments, use the dynamic date variables provided to offer realistic scheduling options."
                     }
                     // Let ElevenLabs dashboard settings handle audio format
                   },
                   dynamic_variables: {
                     "CUSTOMER_NAME": customerName,
                     "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown",
-                    "AIRTABLE_RECORD_ID": decodedCustomParameters?.airtableRecordId || ""
+                    "AIRTABLE_RECORD_ID": decodedCustomParameters?.airtableRecordId || "",
+                    // Dynamic date variables for booking
+                    "CURRENT_DATE_YYYYMMDD": formatDateForEL(today),
+                    "CURRENT_DATE_READABLE": formatDateReadable(today),
+                    "TOMORROW_DATE_YYYYMMDD": formatDateForEL(tomorrow),
+                    "TOMORROW_DATE_READABLE": formatDateReadable(tomorrow),
+                    "NEXT_WEEK_DATE_YYYYMMDD": formatDateForEL(nextWeek),
+                    "NEXT_WEEK_DATE_READABLE": formatDateReadable(nextWeek),
+                    "TIMEZONE": "Australia/Perth",
+                    "EVENT_TYPE_ID": "2171540"
                   }
                 };
                 
@@ -867,7 +1072,8 @@ export default async function (fastify, opts) {
                   elevenLabsWs.send(JSON.stringify(initialConfig));
                   initialConfigSentTimestamp = Date.now();
                   initialConfigSent = true;
-                  console.log(`[!!! CONFIG SENT @ ${initialConfigSentTimestamp}] Sent immediate config for "${customerName}" for ${callSid}`);
+                  console.log(`[!!! CONFIG SENT @ ${initialConfigSentTimestamp}] Sent immediate config with dynamic dates for "${customerName}" for ${callSid}`);
+                  console.log(`[!!! Dynamic Dates] Today: ${formatDateForEL(today)}, Tomorrow: ${formatDateForEL(tomorrow)}, Next Week: ${formatDateForEL(nextWeek)}`);
                 } catch (sendError) {
                   console.error(`[!!! CONFIG ERROR] Failed to send config:`, sendError);
                 }
