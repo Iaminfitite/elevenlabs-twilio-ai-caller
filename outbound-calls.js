@@ -685,7 +685,8 @@ export default async function (fastify, opts) {
                         type: "conversation_initiation_client_data",
                         conversation_config_override: {
                           agent: {
-                            first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`
+                            first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
+                            system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful."
                           },
                           audio_output: {
                             encoding: "ulaw",
@@ -704,17 +705,6 @@ export default async function (fastify, opts) {
                         initialConfigSentTimestamp = Date.now();
                         initialConfigSent = true;
                         console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Sent initialConfig after receiving metadata for "${customerName}" for ${callSid}`);
-                        
-                        // Send a trigger message to start the conversation
-                        setTimeout(() => {
-                          if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                            const triggerMessage = {
-                              type: "conversation_initiation_trigger"
-                            };
-                            elevenLabsWs.send(JSON.stringify(triggerMessage));
-                            console.log(`[!!! EL Trigger] Sent conversation trigger to start agent response`);
-                          }
-                        }, 100);
                         
                       } catch (sendError) {
                         console.error(`[!!! EL Config] FAILED to send initialConfig after metadata:`, sendError);
