@@ -536,19 +536,25 @@ export default async function (fastify, opts) {
 
   // Route to initiate outbound calls
   fastify.post("/outbound-call", async (request, reply) => {
-    const { name, number, airtableRecordId } = request.body;
+    const { name, number, airtableRecordId, useAgent, agentId, customParameters } = request.body;
     if (!number) {
       return reply.code(400).send({ error: "Phone number is required" });
     }
-    if (!airtableRecordId) {
+    
+    // Enhanced parameter processing for n8n integration
+    const callerName = name || "Valued Customer";
+    const recordId = airtableRecordId || null;
+    const customParams = customParameters || {};
+    
+    console.log(`[Server /outbound-call] Processing call for: ${callerName}, Number: ${number}, RecordId: ${recordId}`);
+    
+    if (!recordId) {
         console.warn("[Server /outbound-call] Warning: airtableRecordId not received in request body.");
     }
 
     try {
       // Record call pattern for intelligent pool management
       callPatternTracker.recordCall();
-      
-      const callerName = name || "Valued Customer";
       
       // LATENCY OPTIMIZATION: Pre-cache greeting for this customer
       const cacheStartTime = Date.now();
@@ -580,8 +586,12 @@ export default async function (fastify, opts) {
       const twimlUrl = new URL(`${publicUrl}/outbound-call-twiml`);
       twimlUrl.searchParams.append("name", callerName);
       twimlUrl.searchParams.append("number", number);
-      if (airtableRecordId) {
-          twimlUrl.searchParams.append("airtableRecordId", airtableRecordId);
+      if (recordId) {
+          twimlUrl.searchParams.append("airtableRecordId", recordId);
+      }
+      // Add custom parameters to URL for passing to WebSocket
+      if (customParams && Object.keys(customParams).length > 0) {
+          twimlUrl.searchParams.append("customParams", JSON.stringify(customParams));
       }
 
       const statusCallbackUrl = `${publicUrl}/call-status`;
@@ -602,15 +612,15 @@ export default async function (fastify, opts) {
 
       reply.send({
         success: true,
-        message: "Call initiated with advanced latency optimization",
+        message: "Call initiated with simplified reliable flow",
         callSid: call.sid,
+        customerName: callerName,
         optimizations: {
-          connectionStatus: elevenLabsManager.getStatus(),
-          callPrediction: callPatternTracker.getNext2HoursPrediction(),
+          connectionType: "Fresh connection per call (reliable)",
           greetingPreCached: isCached,
-          expectedLatency: isCached ? "<50ms (instant)" : "~200-300ms (real-time)",
-          costEffective: true,
-          latencyReduction: isCached ? "100% (instant audio)" : "~70% (flash model + optimizations)"
+          expectedLatency: isCached ? "<50ms (instant)" : "~100-200ms (flash model)",
+          configSending: "Immediate on WebSocket open",
+          latencyReduction: "Maximum reliability + speed"
         }
       });
     } catch (error) {
@@ -704,11 +714,22 @@ export default async function (fastify, opts) {
 
   // TwiML route for outbound calls
   fastify.all("/outbound-call-twiml", async (request, reply) => {
-    // --- Add TwiML Log 1: Log Query Params ---
+    // Enhanced parameter extraction for n8n integration
     console.log("[!!! Debug TwiML] Received query params:", request.query);
     const name = request.query.name || "Customer";
     const number = request.query.number || "Unknown";
     const airtableRecordId = request.query.airtableRecordId || null;
+    
+    // Parse custom parameters if present
+    let customParams = {};
+    if (request.query.customParams) {
+      try {
+        customParams = JSON.parse(request.query.customParams);
+        console.log("[!!! Debug TwiML] Parsed custom parameters:", customParams);
+      } catch (parseError) {
+        console.error("[!!! Debug TwiML] Error parsing custom parameters:", parseError);
+      }
+    }
 
     // Function to escape XML attribute values
     const escapeXml = (unsafe) => {
@@ -739,11 +760,12 @@ export default async function (fastify, opts) {
               <Parameter name="name" value="${escapeXml(name)}"/>
               <Parameter name="number" value="${escapeXml(number)}"/>
               <Parameter name="airtableRecordId" value="${escapeXml(airtableRecordId || '')}"/>
+              <Parameter name="customParams" value="${escapeXml(JSON.stringify(customParams))}"/>
             </Stream>
           </Connect>
         </Response>`;
     
-    console.log("[!!! Debug TwiML] Sending TwiML response:", twimlResponse);
+    console.log("[!!! Debug TwiML] Sending TwiML response with enhanced parameters");
     reply.type("text/xml").send(twimlResponse);
   });
 
@@ -801,19 +823,70 @@ export default async function (fastify, opts) {
         };
 
         const setupElevenLabs = async (callSid) => {
-          console.log(`[!!! EL Setup @ ${Date.now()}] Attempting setup using connection pool for ${callSid}.`);
+          console.log(`[!!! EL Setup @ ${Date.now()}] Setting up fresh ElevenLabs connection for ${callSid}.`);
           try {
-            const wsConnectStartTime = Date.now();
-            elevenLabsWs = await elevenLabsManager.getConnection(callSid);
-            const wsConnectEndTime = Date.now();
+            // Get fresh signed URL for each call (like original Barty-Bart approach)
+            const signedUrl = await getSignedUrl();
+            if (!signedUrl) {
+              throw new Error("Failed to get signed URL");
+            }
 
-            console.log(`[!!! EL Setup @ ${wsConnectEndTime}] ElevenLabs WebSocket from pool assigned in ${wsConnectEndTime - wsConnectStartTime}ms.`);
+            // Create fresh WebSocket connection
+            elevenLabsWs = new WebSocket(signedUrl);
+            console.log(`[!!! EL Setup] Creating fresh WebSocket connection for ${callSid}`);
             
-            // Fix: Set the flag properly when connection is ready
-            isElevenLabsWsOpen = (elevenLabsWs.readyState === WebSocket.OPEN);
-            console.log(`[!!! EL Setup] Connection state: ${elevenLabsWs.readyState}, isOpen flag: ${isElevenLabsWsOpen}`);
-            
-            if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
+            // Set up connection handlers
+            elevenLabsWs.on("open", () => {
+              console.log(`[!!! EL Setup] WebSocket opened for ${callSid}`);
+              isElevenLabsWsOpen = true;
+              if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
+
+              // IMMEDIATE CONFIG SENDING (like original Barty-Bart)
+              if (callSid && !initialConfigSent && decodedCustomParameters) {
+                const customerName = decodedCustomParameters?.name || "Valued Customer";
+                
+                console.log(`[!!! IMMEDIATE CONFIG] Sending config immediately for ${customerName}`);
+                
+                const initialConfig = {
+                  type: "conversation_initiation_client_data",
+                  conversation_config_override: {
+                    agent: {
+                      first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
+                      system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful."
+                    }
+                    // Let ElevenLabs dashboard settings handle audio format
+                  },
+                  dynamic_variables: {
+                    "CUSTOMER_NAME": customerName,
+                    "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown",
+                    "AIRTABLE_RECORD_ID": decodedCustomParameters?.airtableRecordId || ""
+                  }
+                };
+                
+                try {
+                  elevenLabsWs.send(JSON.stringify(initialConfig));
+                  initialConfigSentTimestamp = Date.now();
+                  initialConfigSent = true;
+                  console.log(`[!!! CONFIG SENT @ ${initialConfigSentTimestamp}] Sent immediate config for "${customerName}" for ${callSid}`);
+                } catch (sendError) {
+                  console.error(`[!!! CONFIG ERROR] Failed to send config:`, sendError);
+                }
+              }
+
+              // Send any buffered audio immediately
+              if (twilioAudioBuffer.length > 0) {
+                console.log(`[!!! Audio Flush] Sending ${twilioAudioBuffer.length} buffered audio chunks`);
+                twilioAudioBuffer.forEach((audioChunk, index) => {
+                  try {
+                    const audioMessage = { user_audio_chunk: audioChunk };
+                    elevenLabsWs.send(JSON.stringify(audioMessage));
+                  } catch (bufferSendError) {
+                    console.error(`[!!! Audio Flush] Error sending buffered audio:`, bufferSendError);
+                  }
+                });
+                twilioAudioBuffer = [];
+              }
+            });
             
             // Set up message handlers
             elevenLabsWs.on("message", (data) => {
@@ -824,44 +897,13 @@ export default async function (fastify, opts) {
                 if ((message.type === "audio" || message.type === "audio_event") && callSid && !firstAgentAudioPacketLogged[callSid]) {
                   const now = Date.now();
                   const latency = initialConfigSentTimestamp > 0 ? now - initialConfigSentTimestamp : -1;
-                  console.log(`[!!! EL First Audio @ ${now}] Received first audio packet from ElevenLabs for ${callSid}. Type: ${message.type}. Latency since initialConfig: ${latency}ms.`);
+                  console.log(`[!!! EL First Audio @ ${now}] First audio from ElevenLabs for ${callSid}. Latency: ${latency}ms.`);
                   firstAgentAudioPacketLogged[callSid] = true;
                 }
 
                 switch (message.type) {
                   case "conversation_initiation_metadata":
-                    console.log("[ElevenLabs] Received initiation metadata - sending config now");
-                    
-                    // RESTORED: Send config AFTER receiving initiation metadata (natural flow)
-                    if (callSid && !initialConfigSent && decodedCustomParameters) {
-                      const customerName = decodedCustomParameters?.name || "Valued Customer";
-
-                      console.log(`[!!! NATURAL FLOW] Sending config after metadata for ${customerName}`);
-                      
-                      const initialConfig = {
-                        type: "conversation_initiation_client_data",
-                        conversation_config_override: {
-                          agent: {
-                            first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
-                            system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful."
-                          }
-                          // REMOVED: Let ElevenLabs dashboard settings handle audio format
-                        },
-                        dynamic_variables: {
-                          "CUSTOMER_NAME": customerName,
-                          "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
-                        }
-                      };
-                      
-                      try {
-                        elevenLabsWs.send(JSON.stringify(initialConfig));
-                        initialConfigSentTimestamp = Date.now();
-                        initialConfigSent = true;
-                        console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Sent config after metadata for "${customerName}" for ${callSid}`);
-                      } catch (sendError) {
-                        console.error(`[!!! EL Config] FAILED to send config:`, sendError);
-                      }
-                    }
+                    console.log("[ElevenLabs] Received initiation metadata - connection ready");
                     break;
 
                   case "audio":
@@ -930,7 +972,7 @@ export default async function (fastify, opts) {
                     break;
 
                   case "client_tool_call":
-                    console.log(`[!!! Debug Tool Call] Received RAW client_tool_call from EL:`, JSON.stringify(message));
+                    console.log(`[!!! Debug Tool Call] Received client_tool_call:`, JSON.stringify(message));
                     
                     const { tool_name, tool_call_id, parameters } = message.client_tool_call;
                     
@@ -963,48 +1005,27 @@ export default async function (fastify, opts) {
                     break;
 
                   default:
-                    console.log(`[ElevenLabs] Unhandled message type: ${message.type}`);
+                    if (message.type !== "agent_response_correction") {
+                      console.log(`[ElevenLabs] Unhandled message type: ${message.type}`);
+                    }
                 }
               } catch (messageError) {
                 console.error("[ElevenLabs] Error parsing message:", messageError);
               }
             });
 
-            // Send buffered audio immediately after handlers are set up
-            if (twilioAudioBuffer.length > 0) {
-              console.log(`[!!! Debug EL Setup] EL WS Open: Found ${twilioAudioBuffer.length} buffered audio chunks. Sending immediately...`);
-              twilioAudioBuffer.forEach((audioChunk, index) => {
-                try {
-                  const audioMessage = { user_audio_chunk: audioChunk };
-                  elevenLabsWs.send(JSON.stringify(audioMessage));
-                  if (index === twilioAudioBuffer.length - 1) {
-                      console.log("[!!! Debug EL Setup] Finished sending buffered audio.");
-                  }
-                } catch (bufferSendError) {
-                  console.error(`[!!! Debug EL Setup] Error sending buffered audio chunk #${index}:`, bufferSendError);
-                }
-              });
-              twilioAudioBuffer = [];
-            } else {
-                console.log("[!!! Debug EL Setup] EL WS Open: No buffered audio chunks to send.");
-            }
-
-            // Handle cleanup when connection closes
             elevenLabsWs.on("close", (code, reason) => {
               console.log(`[ElevenLabs] Connection closed for ${callSid} - Code: ${code}, Reason: ${reason || 'No reason provided'}`);
               isElevenLabsWsOpen = false;
-              elevenLabsManager.releaseConnection(callSid);
             });
 
             elevenLabsWs.on("error", (error) => {
               console.error(`[ElevenLabs] Connection error for ${callSid}:`, error);
-              console.error(`[ElevenLabs] Error details: ${error.message}, Code: ${error.code}, Type: ${error.type}`);
               isElevenLabsWsOpen = false;
-              elevenLabsManager.releaseConnection(callSid);
             });
 
           } catch (error) {
-            console.error(`[!!! EL Setup @ ${Date.now()}] CRITICAL error in setupElevenLabs function:`, error);
+            console.error(`[!!! EL Setup @ ${Date.now()}] ERROR in setupElevenLabs:`, error);
             throw error;
           }
         };
@@ -1022,18 +1043,32 @@ export default async function (fastify, opts) {
                 callSid = msg.start.callSid;
                 console.log(`[Twilio] Stream started: ${streamSid}, CallSid: ${callSid}`);
                 
-                // Parameters are now directly available in msg.start.customParameters (not base64 encoded)
+                // Enhanced parameter extraction for n8n integration
                 const customParams = msg.start.customParameters || {};
+                
+                // Parse custom parameters if they exist
+                let parsedCustomParams = {};
+                if (customParams.customParams) {
+                  try {
+                    parsedCustomParams = JSON.parse(customParams.customParams);
+                    console.log("[!!! Debug Start Event] Parsed custom parameters:", parsedCustomParams);
+                  } catch (parseError) {
+                    console.error("[!!! Debug Start Event] Error parsing custom parameters:", parseError);
+                  }
+                }
+                
+                // Build comprehensive parameter object
                 decodedCustomParameters = {
                     name: customParams.name || "Valued Customer",
                     number: customParams.number || "Unknown",
-                    airtableRecordId: customParams.airtableRecordId || null
+                    airtableRecordId: customParams.airtableRecordId || null,
+                    customParams: parsedCustomParams
                 };
 
-                console.log("[!!! Debug Start Event] Extracted Custom Parameters:", decodedCustomParameters);
+                console.log("[!!! Debug Start Event] Extracted Enhanced Parameters:", decodedCustomParameters);
                 console.log(`[ConnectionManager] Pool status at call start: ${JSON.stringify(elevenLabsManager.getStatus())}`);
 
-                // Call setupElevenLabs using the connection pool - this will send config immediately
+                // Setup ElevenLabs with fresh connection (Barty-Bart style)
                 setupElevenLabs(callSid); 
                 
                 twilioStartEventProcessed = true; // Mark Twilio start event as processed
@@ -1072,15 +1107,6 @@ export default async function (fastify, opts) {
                       console.log(`[AMD Check] No AMD result found for ${callSid} after wait.`);
                   }
 
-                  console.log("[!!! Debug Start Event] Checking ElevenLabs WS state...");
-                  if (!isElevenLabsWsOpen) {
-                      console.log("[ElevenLabs] Waiting for WebSocket connection to open...");
-                      await Promise.race([
-                          elevenLabsWsOpenPromise,
-                          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for ElevenLabs WS open")), 2000)) // Further reduced timeout
-                      ]);
-                  }
-                  
                   console.log("[!!! Debug Start Event] Finished processing start event logic.");
 
                 } catch (error) {
