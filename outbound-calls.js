@@ -671,29 +671,24 @@ export default async function (fastify, opts) {
                     first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`
                   },
                   tts: {
-                    model: "eleven_turbo_v2_5", // Use fastest model for response speed
-                    voice_settings: {
-                      stability: 0.5,
-                      similarity_boost: 0.5,
-                      speed: 1.1 // Slightly faster speech
-                    }
+                    model: "eleven_turbo_v2_5"
                   },
                   audio_output: {
                     encoding: "ulaw",
-                    sample_rate: 8000,
-                    optimization_level: "max_speed" // Optimize for speed over quality
+                    sample_rate: 8000
                   }
                 },
                 dynamic_variables: {
                   "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
                   "CALL_DIRECTION": "outbound",
-                  "CUSTOMER_NAME": customerName, // Add name for personalization
+                  "CUSTOMER_NAME": customerName,
                   "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown",
                   ...(decodedCustomParameters || {})
                 }
               };
               
               try {
+                console.log(`[!!! EL Config Debug] Sending config:`, JSON.stringify(initialConfig, null, 2));
                 elevenLabsWs.send(JSON.stringify(initialConfig));
                 initialConfigSentTimestamp = Date.now();
                 initialConfigSent = true;
@@ -847,14 +842,15 @@ export default async function (fastify, opts) {
             }
 
             // Handle cleanup when connection closes
-            elevenLabsWs.on("close", () => {
-              console.log(`[ElevenLabs] Connection closed for ${callSid}`);
+            elevenLabsWs.on("close", (code, reason) => {
+              console.log(`[ElevenLabs] Connection closed for ${callSid} - Code: ${code}, Reason: ${reason || 'No reason provided'}`);
               isElevenLabsWsOpen = false;
               elevenLabsManager.releaseConnection(callSid);
             });
 
             elevenLabsWs.on("error", (error) => {
               console.error(`[ElevenLabs] Connection error for ${callSid}:`, error);
+              console.error(`[ElevenLabs] Error details: ${error.message}, Code: ${error.code}, Type: ${error.type}`);
               isElevenLabsWsOpen = false;
               elevenLabsManager.releaseConnection(callSid);
             });
