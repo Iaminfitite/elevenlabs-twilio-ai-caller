@@ -1019,6 +1019,9 @@ export default async function (fastify, opts) {
               if (callSid && !initialConfigSent && decodedCustomParameters) {
                 const customerName = decodedCustomParameters?.name || "Valued Customer";
                 
+                console.log(`[!!! IMMEDIATE CONFIG] About to send config for customer: "${customerName}"`);
+                console.log(`[!!! IMMEDIATE CONFIG] decodedCustomParameters:`, decodedCustomParameters);
+                
                 // Calculate dynamic dates for booking context
                 const today = new Date();
                 const tomorrow = new Date(today);
@@ -1041,13 +1044,14 @@ export default async function (fastify, opts) {
                   });
                 };
                 
-                console.log(`[!!! IMMEDIATE CONFIG] Sending config immediately for ${customerName}`);
+                const firstMessage = `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`;
+                console.log(`[!!! IMMEDIATE CONFIG] First message will be: "${firstMessage}"`);
                 
                 const initialConfig = {
                   type: "conversation_initiation_client_data",
                   conversation_config_override: {
                     agent: {
-                      first_message: `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`,
+                      first_message: firstMessage,
                       system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful. When booking appointments, use the dynamic date variables provided to offer realistic scheduling options."
                     }
                     // Let ElevenLabs dashboard settings handle audio format
@@ -1068,15 +1072,24 @@ export default async function (fastify, opts) {
                   }
                 };
                 
+                console.log(`[!!! IMMEDIATE CONFIG] Full config being sent:`, JSON.stringify(initialConfig, null, 2));
+                
                 try {
                   elevenLabsWs.send(JSON.stringify(initialConfig));
                   initialConfigSentTimestamp = Date.now();
                   initialConfigSent = true;
-                  console.log(`[!!! CONFIG SENT @ ${initialConfigSentTimestamp}] Sent immediate config with dynamic dates for "${customerName}" for ${callSid}`);
+                  console.log(`[!!! CONFIG SENT @ ${initialConfigSentTimestamp}] ✅ Successfully sent config for "${customerName}" for ${callSid}`);
                   console.log(`[!!! Dynamic Dates] Today: ${formatDateForEL(today)}, Tomorrow: ${formatDateForEL(tomorrow)}, Next Week: ${formatDateForEL(nextWeek)}`);
                 } catch (sendError) {
-                  console.error(`[!!! CONFIG ERROR] Failed to send config:`, sendError);
+                  console.error(`[!!! CONFIG ERROR] Failed to send config for "${customerName}":`, sendError);
                 }
+              } else {
+                console.error(`[!!! CONFIG ERROR] Cannot send config - Missing requirements:`, {
+                  callSid: !!callSid,
+                  initialConfigSent: initialConfigSent,
+                  decodedCustomParameters: !!decodedCustomParameters,
+                  decodedCustomParametersContent: decodedCustomParameters
+                });
               }
 
               // Send any buffered audio immediately
@@ -1251,6 +1264,7 @@ export default async function (fastify, opts) {
                 
                 // Enhanced parameter extraction for n8n integration
                 const customParams = msg.start.customParameters || {};
+                console.log("[!!! Debug Start Event] Raw customParameters:", customParams);
                 
                 // Parse custom parameters if they exist
                 let parsedCustomParams = {};
@@ -1263,15 +1277,20 @@ export default async function (fastify, opts) {
                   }
                 }
                 
-                // Build comprehensive parameter object
+                // Build comprehensive parameter object with better fallback logic
+                const extractedName = customParams.name || customParams.customerName || parsedCustomParams.name || "Valued Customer";
+                const extractedNumber = customParams.number || customParams.phoneNumber || parsedCustomParams.number || "Unknown";
+                const extractedRecordId = customParams.airtableRecordId || customParams.recordId || parsedCustomParams.airtableRecordId || null;
+                
                 decodedCustomParameters = {
-                    name: customParams.name || "Valued Customer",
-                    number: customParams.number || "Unknown",
-                    airtableRecordId: customParams.airtableRecordId || null,
+                    name: extractedName,
+                    number: extractedNumber,
+                    airtableRecordId: extractedRecordId,
                     customParams: parsedCustomParams
                 };
 
                 console.log("[!!! Debug Start Event] Extracted Enhanced Parameters:", decodedCustomParameters);
+                console.log(`[!!! Debug Start Event] Final customer name will be: "${decodedCustomParameters.name}"`);
                 console.log(`[ConnectionManager] Pool status at call start: ${JSON.stringify(elevenLabsManager.getStatus())}`);
 
                 // Setup ElevenLabs with fresh connection (Barty-Bart style)
