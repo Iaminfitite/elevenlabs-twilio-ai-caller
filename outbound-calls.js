@@ -688,12 +688,6 @@ export default async function (fastify, opts) {
                             encoding: "ulaw",
                             sample_rate: 8000
                           }
-                        },
-                        dynamic_variables: {
-                          "CURRENT_DATE_YYYYMMDD": currentDateYYYYMMDD,
-                          "CALL_DIRECTION": "outbound",
-                          "CUSTOMER_NAME": customerName,
-                          "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown"
                         }
                       };
                       
@@ -703,6 +697,18 @@ export default async function (fastify, opts) {
                         initialConfigSentTimestamp = Date.now();
                         initialConfigSent = true;
                         console.log(`[!!! EL Config @ ${initialConfigSentTimestamp}] Sent initialConfig after receiving metadata for "${customerName}" for ${callSid}`);
+                        
+                        // Send a trigger message to start the conversation
+                        setTimeout(() => {
+                          if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                            const triggerMessage = {
+                              type: "conversation_initiation_trigger"
+                            };
+                            elevenLabsWs.send(JSON.stringify(triggerMessage));
+                            console.log(`[!!! EL Trigger] Sent conversation trigger to start agent response`);
+                          }
+                        }, 100);
+                        
                       } catch (sendError) {
                         console.error(`[!!! EL Config] FAILED to send initialConfig after metadata:`, sendError);
                       }
