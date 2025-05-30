@@ -608,6 +608,7 @@ export default async function (fastify, opts) {
         let twilioAudioBuffer = [];
         let audioBatchBuffer = []; // For batch processing
         let audioBatchTimeout = null;
+        let pendingAudioBuffer = []; // For buffering ElevenLabs audio when streamSid not ready
         
         let twilioStartEventProcessed = false;
         let initialConfigSent = false;
