@@ -934,9 +934,9 @@ export default async function (fastify, opts) {
                 break;
 
               case "media":
-                // Reduce logging overhead - only log occasionally for debugging
-                if (Math.random() < 0.01) { // Log only 1% of media events
-                  console.log("[!!! Debug Media Sample] Media forwarding active...");
+                // Temporarily increase logging to debug user audio flow
+                if (Math.random() < 0.1) { // Log 10% of media events for debugging
+                  console.log(`[!!! Debug Media Sample] Media forwarding active - EL WS State: ${elevenLabsWs?.readyState}, isOpen: ${isElevenLabsWsOpen}`);
                 }
                 
                 const audioPayloadBase64 = msg.media.payload;
@@ -946,6 +946,11 @@ export default async function (fastify, opts) {
                   try {
                     const audioMessage = { user_audio_chunk: audioPayloadBase64 };
                     elevenLabsWs.send(JSON.stringify(audioMessage));
+                    
+                    // Log every 50th successful send to confirm audio flow
+                    if (Math.random() < 0.02) {
+                      console.log("[!!! Debug Media] Successfully sent user audio chunk to ElevenLabs");
+                    }
                   } catch (mediaSendError) {
                      console.error("[!!! Debug Media] Error sending live audio chunk:", mediaSendError);
                   }
@@ -955,7 +960,12 @@ export default async function (fastify, opts) {
                      twilioAudioBuffer.push(audioPayloadBase64);
                    }
                    if (twilioAudioBuffer.length === 1) { // Log only first buffered chunk
-                     console.log("[!!! Debug Media] EL WS not ready, buffering audio...");
+                     console.log(`[!!! Debug Media] EL WS not ready, buffering audio... State: ${elevenLabsWs?.readyState}, isOpen flag: ${isElevenLabsWsOpen}`);
+                   }
+                   
+                   // Log every 100th buffered message to track ongoing buffering
+                   if (twilioAudioBuffer.length % 100 === 0) {
+                     console.log(`[!!! Debug Media] Still buffering - ${twilioAudioBuffer.length} chunks buffered. EL State: ${elevenLabsWs?.readyState}`);
                    }
                 }
                 break;
