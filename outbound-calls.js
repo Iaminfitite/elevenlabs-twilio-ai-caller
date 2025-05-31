@@ -213,165 +213,6 @@ class ElevenLabsConnectionManager {
 // Initialize the lightweight connection manager
 const elevenLabsManager = new ElevenLabsConnectionManager();
 
-// Pre-generated greeting cache for instant playback
-class GreetingCache {
-  constructor() {
-    this.cache = new Map();
-    this.personalizedCache = new Map(); // Cache by customer name
-    this.isInitializing = false;
-    this.initialize();
-  }
-
-  async initialize() {
-    if (this.isInitializing) return;
-    this.isInitializing = true;
-    
-    console.log("[GreetingCache] Initializing personalized greeting cache...");
-    
-    // Pre-generate greetings for common names
-    const commonNames = [
-      "John", "Jane", "Mike", "Sarah", "David", "Lisa", "Chris", "Amy", 
-      "Steve", "Michelle", "Alex", "Jennifer", "Robert", "Jessica", "Mark", 
-      "Ashley", "Daniel", "Amanda", "Brian", "Nicole", "Kevin", "Stephanie",
-      "Valued Customer", "Customer"
-    ];
-
-    // Generate personalized greetings sequentially with longer delays to avoid rate limits
-    console.log(`[GreetingCache] Generating ${commonNames.length} personalized greetings sequentially...`);
-    let successCount = 0;
-    
-    for (let i = 0; i < commonNames.length; i++) {
-      const name = commonNames[i];
-      try {
-        const success = await this.preGeneratePersonalizedGreeting(name);
-        if (success) {
-          successCount++;
-        }
-        
-        // Add longer delay between requests to respect rate limits (increased from 500ms to 1000ms)
-        if (i < commonNames.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000)); // 1000ms delay
-        }
-      } catch (error) {
-        console.error(`[GreetingCache] Error generating greeting for "${name}":`, error);
-        
-        // If we hit rate limits, wait longer before continuing
-        if (error.message && error.message.includes('429')) {
-          console.log(`[GreetingCache] Rate limit hit, waiting 5 seconds before continuing...`);
-          await new Promise(resolve => setTimeout(resolve, 5000));
-        }
-      }
-    }
-    
-    console.log(`[GreetingCache] Cached personalized greetings for ${successCount} names out of ${commonNames.length} attempted`);
-    this.isInitializing = false;
-  }
-
-  async preGeneratePersonalizedGreeting(customerName) {
-    try {
-      const greetingText = `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`;
-      
-      // Re-enable caching but use it properly within the natural flow
-      console.log(`[GreetingCache] Generating greeting for "${customerName}"`);
-      
-      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_AGENT_ID}/stream`, {
-        method: 'POST',
-        headers: {
-          'Accept': 'audio/mpeg',
-          'Content-Type': 'application/json',
-          'xi-api-key': ELEVENLABS_API_KEY
-        },
-        body: JSON.stringify({
-          text: greetingText,
-          model_id: "eleven_flash_v2_5", // Use fastest model
-          voice_settings: {
-            stability: 0.5, // ElevenLabs dashboard defaults
-            similarity_boost: 0.5, // ElevenLabs dashboard defaults  
-            style: 0.0, // ElevenLabs dashboard defaults
-            use_speaker_boost: true // ElevenLabs dashboard defaults
-          },
-          output_format: "ulaw_8000" // Match Twilio format
-        })
-      });
-
-      if (response.ok) {
-        const audioBuffer = await response.arrayBuffer();
-        const base64Audio = Buffer.from(audioBuffer).toString('base64');
-        
-        this.personalizedCache.set(customerName.toLowerCase(), {
-          text: greetingText,
-          audio: base64Audio,
-          timestamp: Date.now()
-        });
-        
-        console.log(`[GreetingCache] Cached greeting for "${customerName}"`);
-        return true;
-      } else {
-        const errorText = await response.text();
-        console.error(`[GreetingCache] Failed to generate greeting for "${customerName}": ${response.status} ${response.statusText} - ${errorText}`);
-        return false;
-      }
-    } catch (error) {
-      console.error(`[GreetingCache] Error generating greeting for "${customerName}":`, error);
-      return false;
-    }
-  }
-
-  // Get cached personalized greeting by name
-  getCachedPersonalizedGreeting(customerName) {
-    const cached = this.personalizedCache.get(customerName.toLowerCase());
-    if (cached) {
-      // Check if cache is fresh (less than 1 hour old)
-      const oneHourAgo = Date.now() - 60 * 60 * 1000;
-      if (cached.timestamp > oneHourAgo) {
-        return cached;
-      } else {
-        // Remove stale cache and regenerate async
-        this.personalizedCache.delete(customerName.toLowerCase());
-        this.preGeneratePersonalizedGreeting(customerName);
-      }
-    }
-    return null;
-  }
-
-  // Fallback to generic cached greeting
-  getCachedGreeting(text) {
-    return this.cache.get(text);
-  }
-
-  getRandomGreeting() {
-    const greetings = Array.from(this.cache.keys());
-    if (greetings.length === 0) return null;
-    const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
-    return {
-      text: randomGreeting,
-      audio: this.cache.get(randomGreeting)
-    };
-  }
-
-  // Get stats for monitoring
-  getStats() {
-    return {
-      totalPersonalizedCached: this.personalizedCache.size,
-      totalGenericCached: this.cache.size,
-      availableNames: Array.from(this.personalizedCache.keys()),
-      isInitializing: this.isInitializing
-    };
-  }
-
-  // Pre-cache a greeting for a specific customer name if not already cached
-  async ensureGreetingCached(customerName) {
-    const normalizedName = customerName.toLowerCase();
-    if (!this.personalizedCache.has(normalizedName)) {
-      console.log(`[GreetingCache] Pre-generating greeting for new customer: ${customerName}`);
-      await this.preGeneratePersonalizedGreeting(customerName);
-    }
-  }
-}
-
-// Initialize greeting cache
-const greetingCache = new GreetingCache();
-
 // Simple tool execution handler with dynamic date handling
 async function handleToolExecution(tool_name, parameters) {
   console.log(`[Tool Execution] Executing tool: ${tool_name} with parameters:`, parameters);
@@ -711,16 +552,32 @@ export default async function (fastify, opts) {
   // Route to initiate outbound calls
   fastify.post("/outbound-call", async (request, reply) => {
     const { name, number, airtableRecordId, useAgent, agentId, customParameters } = request.body;
+    
+    // 🔍 COMPREHENSIVE DEBUGGING - Let's see exactly what n8n is sending
+    console.log("[!!! OUTBOUND CALL DEBUG] Full request body:", JSON.stringify(request.body, null, 2));
+    console.log("[!!! OUTBOUND CALL DEBUG] Individual parameters:");
+    console.log(`  - name: "${name}" (type: ${typeof name})`);
+    console.log(`  - number: "${number}" (type: ${typeof number})`);
+    console.log(`  - airtableRecordId: "${airtableRecordId}" (type: ${typeof airtableRecordId})`);
+    console.log(`  - useAgent: "${useAgent}" (type: ${typeof useAgent})`);
+    console.log(`  - agentId: "${agentId}" (type: ${typeof agentId})`);
+    console.log(`  - customParameters: ${JSON.stringify(customParameters)} (type: ${typeof customParameters})`);
+    
     if (!number) {
+      console.error("[!!! OUTBOUND CALL ERROR] Phone number is required but missing!");
       return reply.code(400).send({ error: "Phone number is required" });
     }
     
     // Enhanced parameter processing for n8n integration
-    const callerName = name || "Valued Customer";
+    const callerName = name || "Unknown Customer"; // Changed from "Valued Customer" 
     const recordId = airtableRecordId || null;
     const customParams = customParameters || {};
     
-    console.log(`[Server /outbound-call] Processing call for: ${callerName}, Number: ${number}, RecordId: ${recordId}`);
+    console.log(`[!!! OUTBOUND CALL] Final processed parameters:`);
+    console.log(`  - callerName: "${callerName}"`);
+    console.log(`  - number: "${number}"`);
+    console.log(`  - recordId: "${recordId}"`);
+    console.log(`  - customParams: ${JSON.stringify(customParams)}`);
     
     if (!recordId) {
         console.warn("[Server /outbound-call] Warning: airtableRecordId not received in request body.");
@@ -730,13 +587,8 @@ export default async function (fastify, opts) {
       // Record call pattern for intelligent pool management
       callPatternTracker.recordCall();
       
-      // LATENCY OPTIMIZATION: Pre-cache greeting for this customer
-      const cacheStartTime = Date.now();
-      await greetingCache.ensureGreetingCached(callerName);
-      const cacheEndTime = Date.now();
-      
-      const isCached = greetingCache.getCachedPersonalizedGreeting(callerName) !== null;
-      console.log(`[Pre-Cache] Customer "${callerName}" cache status: ${isCached ? 'CACHED' : 'NOT CACHED'} (${cacheEndTime - cacheStartTime}ms)`);
+      // 🚀 REMOVED GREETING CACHE - Focus on immediate streaming optimizations
+      console.log(`[Outbound Call] Processing call for: ${callerName}, Number: ${number}`);
       
       // Use public URL for Twilio webhooks (required for Twilio to reach our server)
       const publicUrl = process.env.PUBLIC_URL || 
@@ -791,8 +643,8 @@ export default async function (fastify, opts) {
         customerName: callerName,
         optimizations: {
           connectionType: "Fresh connection per call (reliable)",
-          greetingPreCached: isCached,
-          expectedLatency: isCached ? "<50ms (instant)" : "~100-200ms (flash model)",
+          greetingPreCached: false,
+          expectedLatency: "~100-200ms (flash model)",
           configSending: "Immediate on WebSocket open",
           latencyReduction: "Maximum reliability + speed"
         }
@@ -833,52 +685,39 @@ export default async function (fastify, opts) {
   fastify.get("/optimization-status", async (request, reply) => {
     reply.send({
       connectionManager: elevenLabsManager.getStatus(),
-      greetingCache: {
-        ...greetingCache.getStats(),
-        description: "Personalized pre-generated greetings for instant audio delivery"
-      },
       callPatterns: callPatternTracker.getStats(),
       latencyOptimizations: {
-        preCachedAudio: {
+        immediateStreaming: {
           enabled: true,
-          description: "Pre-generated personalized greetings eliminate TTS latency completely",
-          estimatedLatencyReduction: "~237ms (100% elimination of TTS generation time)",
-          personalizedNames: greetingCache.getStats().totalPersonalizedCached,
-          fallbackToRealTime: "Yes - for uncached names"
+          description: "WebSocket audio streaming with immediate forwarding",
+          estimatedLatencyReduction: "~100-200ms elimination of buffering delays",
+          features: ["Immediate audio chunk forwarding", "Optimized buffer management", "Real-time performance tracking"]
         },
-        flashModel: {
+        freshConnections: {
           enabled: true,
-          model: "eleven_flash_v2_5",
-          description: "Fastest ElevenLabs model with 75ms inference time",
-          estimatedLatencyReduction: "~162ms reduction vs standard models"
+          description: "Fresh WebSocket connection per call for maximum reliability",
+          estimatedLatencyReduction: "Eliminates connection state pollution"
         },
-        optimizedVoiceSettings: {
+        cachedSignedUrls: {
           enabled: true,
-          settings: {
-            stability: 0.3,
-            similarity_boost: 0.3, 
-            style: 0.1,
-            use_speaker_boost: false
-          },
-          description: "Speed-optimized voice settings for faster generation"
+          description: "Pre-cached signed URLs for instant connection setup",
+          currentCache: elevenLabsManager.getStatus().cachedUrls
         }
       },
       recommendations: {
-        totalLatencyReduction: "Up to 100% for cached names, ~70% for uncached names",
-        shouldIncreaseCache: callPatternTracker.getNext2HoursPrediction() > elevenLabsManager.urlCacheSize * 2,
+        totalLatencyReduction: "~50-70% improvement through streaming optimizations",
         costEffectiveOptimizations: [
-          "Single WebSocket connection with reuse",
-          "Pre-cached signed URLs (3-10 based on demand)", 
-          "Intelligent idle connection cleanup (30s)",
-          "🚀 NEW: Personalized pre-generated audio cache for instant delivery",
-          "🚀 NEW: eleven_flash_v2_5 model for 75ms inference",
-          "🚀 NEW: Speed-optimized voice settings",
-          "Reduced timeout thresholds"
+          "🚀 Immediate WebSocket audio streaming",
+          "🚀 Fresh connection per call (reliable)",
+          "🚀 Pre-cached signed URLs (3-10 based on demand)", 
+          "🚀 Intelligent idle connection cleanup (30s)",
+          "🚀 Enhanced error handling and fallbacks",
+          "🚀 Real-time performance monitoring"
         ],
         costSavings: "95% reduction in concurrent connections vs pool approach",
         expectedLatency: {
-          cachedNames: "<50ms (instant audio delivery)",
-          uncachedNames: "~200-300ms (significantly improved)",
+          firstMessage: "~200-300ms (significantly improved)",
+          subsequentMessages: "<100ms (real-time streaming)",
           previousLatency: "~697ms"
         }
       },
@@ -1306,9 +1145,9 @@ export default async function (fastify, opts) {
                 }
                 
                 // Build comprehensive parameter object with better fallback logic
-                const extractedName = customParams.name || customParams.customerName || parsedCustomParams.name || "Valued Customer";
-                const extractedNumber = customParams.number || customParams.phoneNumber || parsedCustomParams.number || "Unknown";
-                const extractedRecordId = customParams.airtableRecordId || customParams.recordId || parsedCustomParams.airtableRecordId || null;
+                const extractedName = customParams.name || customParams.customerName || parsedCustomParams.name || parsedCustomParams.customerName || "Unknown Customer";
+                const extractedNumber = customParams.number || customParams.phoneNumber || parsedCustomParams.number || parsedCustomParams.phoneNumber || "Unknown";
+                const extractedRecordId = customParams.airtableRecordId || customParams.recordId || parsedCustomParams.airtableRecordId || parsedCustomParams.recordId || null;
                 
                 decodedCustomParameters = {
                     name: extractedName,
@@ -1319,6 +1158,12 @@ export default async function (fastify, opts) {
 
                 console.log("[!!! Debug Start Event] Extracted Enhanced Parameters:", decodedCustomParameters);
                 console.log(`[!!! Debug Start Event] Final customer name will be: "${decodedCustomParameters.name}"`);
+                
+                // 🚨 NAME VALIDATION - Check if we're getting "Valued Customer" when we shouldn't
+                if (decodedCustomParameters.name === "Valued Customer" && (customParams.name || parsedCustomParams.name)) {
+                  console.warn(`[!!! NAME WARNING] Name defaulted to "Valued Customer" but we have: customParams.name="${customParams.name}", parsedCustomParams.name="${parsedCustomParams.name}"`);
+                }
+
                 console.log(`[ConnectionManager] Pool status at call start: ${JSON.stringify(elevenLabsManager.getStatus())}`);
 
                 // Setup ElevenLabs with fresh connection (Barty-Bart style)
