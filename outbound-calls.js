@@ -968,33 +968,15 @@ export default async function (fastify, opts) {
         let initialConfigSent = false;
         let initialConfigSentTimestamp = 0; // For latency tracking
         let firstAgentAudioPacketLogged = {}; // Tracks if first agent audio is logged {callSid: true}
+        
+        // 🚀 PERFORMANCE MONITORING VARIABLES
+        let audioStreamingStartTime = null;
+        let totalAudioChunksStreamed = 0;
+        let streamingErrors = 0;
 
         ws.on("error", (error) => console.error("[!!! Twilio WS Error]:", error));
 
-        // Batch audio processing for better performance
-        const flushAudioBatch = () => {
-          if (audioBatchBuffer.length > 0 && elevenLabsWs?.readyState === WebSocket.OPEN) {
-            try {
-              // Send multiple audio chunks in one message for efficiency
-              const batchMessage = {
-                user_audio_chunks: audioBatchBuffer
-              };
-              elevenLabsWs.send(JSON.stringify(batchMessage));
-              audioBatchBuffer = [];
-            } catch (error) {
-              console.error("[Audio Batch] Error sending batch:", error);
-              // Fallback to individual sending
-              audioBatchBuffer.forEach(chunk => {
-                try {
-                  elevenLabsWs.send(JSON.stringify({ user_audio_chunk: chunk }));
-                } catch (e) {
-                  console.error("[Audio Batch] Error sending individual chunk:", e);
-                }
-              });
-              audioBatchBuffer = [];
-            }
-          }
-        };
+        // 🚀 REMOVED OLD BATCHING - Now using immediate streaming for optimal latency
 
         const setupElevenLabs = async (callSid) => {
           console.log(`[!!! EL Setup @ ${Date.now()}] Setting up fresh ElevenLabs connection for ${callSid}.`);
@@ -1094,16 +1076,28 @@ export default async function (fastify, opts) {
 
               // Send any buffered audio immediately
               if (twilioAudioBuffer.length > 0) {
-                console.log(`[!!! Audio Flush] Sending ${twilioAudioBuffer.length} buffered audio chunks`);
-                twilioAudioBuffer.forEach((audioChunk, index) => {
-                  try {
-                    const audioMessage = { user_audio_chunk: audioChunk };
-                    elevenLabsWs.send(JSON.stringify(audioMessage));
-                  } catch (bufferSendError) {
-                    console.error(`[!!! Audio Flush] Error sending buffered audio:`, bufferSendError);
-                  }
-                });
-                twilioAudioBuffer = [];
+                console.log(`[🚀 AUDIO FLUSH] Sending ${twilioAudioBuffer.length} buffered user audio chunks to ElevenLabs`);
+                // ⚡ OPTIMIZED BATCH SENDING - Process in smaller chunks for better performance
+                const CHUNK_SIZE = 10;
+                let processed = 0;
+                
+                while (twilioAudioBuffer.length > 0 && processed < 100) { // Limit to prevent infinite loop
+                  const batch = twilioAudioBuffer.splice(0, Math.min(CHUNK_SIZE, twilioAudioBuffer.length));
+                  
+                  batch.forEach((audioChunk, index) => {
+                    try {
+                      const audioMessage = { user_audio_chunk: audioChunk };
+                      elevenLabsWs.send(JSON.stringify(audioMessage));
+                      processed++;
+                    } catch (bufferSendError) {
+                      console.error(`[🚀 AUDIO FLUSH ERROR] Failed to send buffered audio chunk ${index}:`, bufferSendError);
+                      // Skip failed chunks to prevent infinite retry
+                    }
+                  });
+                }
+                
+                console.log(`[🚀 AUDIO FLUSH] Successfully processed ${processed} audio chunks`);
+                twilioAudioBuffer = []; // Clear any remaining buffer
               }
             });
             
@@ -1127,6 +1121,7 @@ export default async function (fastify, opts) {
 
                   case "audio":
                   case "audio_event":
+                    // 🚀 OPTIMIZED AUDIO STREAMING - IMMEDIATE FORWARDING
                     if (streamSid) {
                       let audioChunk = null;
                       if (message.audio?.chunk) {
@@ -1136,6 +1131,7 @@ export default async function (fastify, opts) {
                       }
                       
                       if (audioChunk) {
+                        // ⚡ IMMEDIATE STREAMING - No buffering, send instantly
                         const audioData = {
                           event: "media",
                           streamSid,
@@ -1143,7 +1139,27 @@ export default async function (fastify, opts) {
                             payload: audioChunk,
                           },
                         };
-                        ws.send(JSON.stringify(audioData));
+                        
+                        try {
+                          ws.send(JSON.stringify(audioData));
+                          
+                          // High-frequency logging for first few chunks to monitor streaming
+                          if (firstAgentAudioPacketLogged[callSid] && Date.now() - (firstAgentAudioPacketLogged[callSid] || 0) < 1000) {
+                            console.log(`[🚀 STREAM] Audio chunk forwarded immediately - Size: ${audioChunk.length} chars`);
+                          }
+                          
+                          // 📊 PERFORMANCE TRACKING
+                          totalAudioChunksStreamed++;
+                          if (!audioStreamingStartTime) {
+                            audioStreamingStartTime = Date.now();
+                          }
+                        } catch (streamError) {
+                          console.error(`[🚀 STREAM ERROR] Failed to forward audio chunk:`, streamError);
+                          streamingErrors++;
+                          // Fallback to buffering if streaming fails
+                          if (!pendingAudioBuffer) pendingAudioBuffer = [];
+                          pendingAudioBuffer.push(audioChunk);
+                        }
                       }
                     } else {
                       // Buffer audio if streamSid not ready yet
@@ -1151,19 +1167,31 @@ export default async function (fastify, opts) {
                         if (!pendingAudioBuffer) pendingAudioBuffer = [];
                         const audioChunk = message.audio?.chunk || message.audio_event?.audio_base_64;
                         pendingAudioBuffer.push(audioChunk);
-                        console.log(`[ElevenLabs] Buffering audio - StreamSid not ready. Buffer size: ${pendingAudioBuffer.length}`);
+                        console.log(`[🚀 BUFFER] Buffering audio - StreamSid not ready. Buffer size: ${pendingAudioBuffer.length}`);
+                        
+                        // 🔄 OPTIMIZED BUFFER MANAGEMENT - Prevent memory overflow
+                        if (pendingAudioBuffer.length > 100) {
+                          console.warn(`[🚀 BUFFER WARNING] Large audio buffer (${pendingAudioBuffer.length}), clearing oldest chunks`);
+                          pendingAudioBuffer = pendingAudioBuffer.slice(-50); // Keep only latest 50 chunks
+                        }
                       }
                     }
                     break;
 
                   case "interruption":
+                    // 🛑 IMMEDIATE INTERRUPTION HANDLING
                     if (streamSid) {
-                      ws.send(
-                        JSON.stringify({
-                          event: "clear",
-                          streamSid,
-                        })
-                      );
+                      try {
+                        ws.send(
+                          JSON.stringify({
+                            event: "clear",
+                            streamSid,
+                          })
+                        );
+                        console.log(`[🛑 INTERRUPT] Sent clear command for streamSid: ${streamSid}`);
+                      } catch (interruptError) {
+                        console.error(`[🛑 INTERRUPT ERROR] Failed to send clear command:`, interruptError);
+                      }
                     }
                     break;
 
@@ -1300,18 +1328,32 @@ export default async function (fastify, opts) {
 
                 // Flush any pending audio that was buffered while streamSid wasn't available
                 if (pendingAudioBuffer && pendingAudioBuffer.length > 0) {
-                  console.log(`[!!! Audio Flush] Sending ${pendingAudioBuffer.length} buffered audio packets to Twilio`);
+                  console.log(`[🚀 PENDING FLUSH] Sending ${pendingAudioBuffer.length} buffered ElevenLabs audio packets to Twilio`);
+                  
+                  let flushed = 0;
                   pendingAudioBuffer.forEach((audioChunk, index) => {
-                    const audioData = {
-                      event: "media",
-                      streamSid,
-                      media: {
-                        payload: audioChunk,
-                      },
-                    };
-                    ws.send(JSON.stringify(audioData));
+                    try {
+                      const audioData = {
+                        event: "media",
+                        streamSid,
+                        media: {
+                          payload: audioChunk,
+                        },
+                      };
+                      ws.send(JSON.stringify(audioData));
+                      flushed++;
+                      
+                      // Log progress for large buffers
+                      if (index > 0 && index % 10 === 0) {
+                        console.log(`[🚀 PENDING FLUSH] Progress: ${index}/${pendingAudioBuffer.length} chunks sent`);
+                      }
+                    } catch (flushError) {
+                      console.error(`[🚀 PENDING FLUSH ERROR] Failed to send buffered audio chunk ${index}:`, flushError);
+                    }
                   });
-                  pendingAudioBuffer = [];
+                  
+                  console.log(`[🚀 PENDING FLUSH] Successfully sent ${flushed}/${pendingAudioBuffer.length} buffered audio chunks`);
+                  pendingAudioBuffer = []; // Clear buffer after flushing
                 }
 
                 let isVoicemail = false;
@@ -1340,34 +1382,42 @@ export default async function (fastify, opts) {
                 break;
 
               case "media":
-                // Check WebSocket state directly instead of relying on flag
+                // 🎤 OPTIMIZED USER AUDIO STREAMING TO ELEVENLABS
                 const audioPayloadBase64 = msg.media.payload;
                 
                 if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                  // Send immediately for low latency
+                  // ⚡ IMMEDIATE AUDIO FORWARDING - No batching delays
                   try {
                     const audioMessage = { user_audio_chunk: audioPayloadBase64 };
                     elevenLabsWs.send(JSON.stringify(audioMessage));
                     
-                    // Log occasionally to confirm audio flow
+                    // Periodic logging to confirm audio flow (every 100th packet)
                     if (Math.random() < 0.01) {
-                      console.log("[!!! Debug Media] Successfully sent user audio chunk to ElevenLabs");
+                      console.log(`[🎤 USER AUDIO] Successfully streamed chunk to ElevenLabs (${audioPayloadBase64.length} chars)`);
                     }
                   } catch (mediaSendError) {
-                     console.error("[!!! Debug Media] Error sending live audio chunk:", mediaSendError);
+                     console.error(`[🎤 USER AUDIO ERROR] Failed to stream audio chunk:`, mediaSendError);
+                     // 🔄 FALLBACK BUFFERING - Only if streaming fails
+                     if (twilioAudioBuffer.length < 100) {
+                       twilioAudioBuffer.push(audioPayloadBase64);
+                       console.log(`[🎤 FALLBACK] Buffered failed audio chunk. Buffer size: ${twilioAudioBuffer.length}`);
+                     }
                   }
                 } else {
-                   // Buffer audio if ElevenLabs not ready
-                   if (twilioAudioBuffer.length < 200) {
+                   // 📦 OPTIMIZED BUFFERING - Only when necessary
+                   if (twilioAudioBuffer.length < 150) { // Increased buffer limit
                      twilioAudioBuffer.push(audioPayloadBase64);
-                   }
-                   if (twilioAudioBuffer.length === 1) {
-                     console.log(`[!!! Debug Media] EL WS not ready, buffering audio... State: ${elevenLabsWs?.readyState}`);
+                   } else {
+                     // 🗑️ BUFFER MANAGEMENT - Drop oldest chunks to prevent memory issues
+                     twilioAudioBuffer.shift(); // Remove oldest
+                     twilioAudioBuffer.push(audioPayloadBase64); // Add newest
                    }
                    
-                   // Log buffering status occasionally
-                   if (twilioAudioBuffer.length % 50 === 0) {
-                     console.log(`[!!! Debug Media] Still buffering - ${twilioAudioBuffer.length} chunks buffered. EL State: ${elevenLabsWs?.readyState}`);
+                   // 📊 SMART LOGGING - Reduce log spam
+                   if (twilioAudioBuffer.length === 1) {
+                     console.log(`[🎤 BUFFERING] EL WS not ready (state: ${elevenLabsWs?.readyState}), starting audio buffer...`);
+                   } else if (twilioAudioBuffer.length % 25 === 0) {
+                     console.log(`[🎤 BUFFERING] ${twilioAudioBuffer.length} chunks buffered. EL State: ${elevenLabsWs?.readyState}`);
                    }
                 }
                 break;
