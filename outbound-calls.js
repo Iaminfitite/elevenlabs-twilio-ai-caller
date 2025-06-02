@@ -325,6 +325,15 @@ async function handleToolExecution(tool_name, parameters) {
         status: "completed"
       };
     
+    case 'end_voicemail_call':
+      // Special handler for ending voicemail calls gracefully
+      console.log(`[🎯 VOICEMAIL TOOL] Voicemail delivery completed, ending call gracefully`);
+      return {
+        message: "Voicemail delivered successfully, call will end",
+        status: "voicemail_completed",
+        action: "end_call"
+      };
+    
     case 'webhook':
     case 'cal_webhook':
     case 'check_availability':
@@ -702,6 +711,18 @@ export default async function (fastify, opts) {
           enabled: true,
           description: "Pre-cached signed URLs for instant connection setup",
           currentCache: elevenLabsManager.getStatus().cachedUrls
+        },
+        voicemailDetection: {
+          enabled: true,
+          description: "Intelligent voicemail detection and automated message delivery",
+          features: [
+            "Twilio AMD (Answering Machine Detection) integration",
+            "Custom voicemail message configuration",
+            "Automated call termination after message delivery",
+            "Graceful handling of machine_start, machine_end_beep, machine_end_silence, machine_end_other, and fax"
+          ],
+          voicemailTimeout: "60 seconds maximum, 30 seconds typical",
+          messageDelivery: "Professional voicemail with callback request"
         }
       },
       recommendations: {
@@ -712,13 +733,22 @@ export default async function (fastify, opts) {
           "🚀 Pre-cached signed URLs (3-10 based on demand)", 
           "🚀 Intelligent idle connection cleanup (30s)",
           "🚀 Enhanced error handling and fallbacks",
-          "🚀 Real-time performance monitoring"
+          "🚀 Real-time performance monitoring",
+          "🎯 Smart voicemail detection and message delivery",
+          "🎯 Automated call completion for voicemail scenarios"
         ],
         costSavings: "95% reduction in concurrent connections vs pool approach",
         expectedLatency: {
           firstMessage: "~200-300ms (significantly improved)",
           subsequentMessages: "<100ms (real-time streaming)",
+          voicemailDelivery: "~20-30 seconds professional message",
           previousLatency: "~697ms"
+        },
+        voicemailHandling: {
+          detectionAccuracy: "High (Twilio AMD technology)",
+          messageQuality: "Professional, personalized voicemail",
+          callEfficiency: "Automatic termination prevents wasted minutes",
+          customerExperience: "Clear callback request with company information"
         }
       },
       timestamp: new Date().toISOString()
@@ -836,11 +866,15 @@ export default async function (fastify, opts) {
               isElevenLabsWsOpen = true;
               if (resolveElevenLabsWsOpen) resolveElevenLabsWsOpen();
 
-              // IMMEDIATE CONFIG SENDING (like original Barty-Bart)
-              if (callSid && !initialConfigSent && decodedCustomParameters) {
+              // Check if this is a voicemail call before sending normal config
+              const isVoicemailCall = callSid && amdResults[callSid] && 
+                ["machine_start", "machine_end_beep", "machine_end_silence", "machine_end_other", "fax"].includes(amdResults[callSid]);
+
+              // IMMEDIATE CONFIG SENDING (only for normal calls, not voicemail)
+              if (callSid && !initialConfigSent && decodedCustomParameters && !isVoicemailCall) {
                 const customerName = decodedCustomParameters?.name || "Valued Customer";
                 
-                console.log(`[!!! IMMEDIATE CONFIG] About to send config for customer: "${customerName}"`);
+                console.log(`[!!! IMMEDIATE CONFIG] About to send normal conversation config for customer: "${customerName}"`);
                 console.log(`[!!! IMMEDIATE CONFIG] decodedCustomParameters:`, decodedCustomParameters);
                 
                 // Calculate dynamic dates for booking context
@@ -893,22 +927,25 @@ export default async function (fastify, opts) {
                   }
                 };
                 
-                console.log(`[!!! IMMEDIATE CONFIG] Full config being sent:`, JSON.stringify(initialConfig, null, 2));
+                console.log(`[!!! IMMEDIATE CONFIG] Full normal conversation config being sent:`, JSON.stringify(initialConfig, null, 2));
                 
                 try {
                   elevenLabsWs.send(JSON.stringify(initialConfig));
                   initialConfigSentTimestamp = Date.now();
                   initialConfigSent = true;
-                  console.log(`[!!! CONFIG SENT @ ${initialConfigSentTimestamp}] ✅ Successfully sent config for "${customerName}" for ${callSid}`);
+                  console.log(`[!!! CONFIG SENT @ ${initialConfigSentTimestamp}] ✅ Successfully sent normal conversation config for "${customerName}" for ${callSid}`);
                   console.log(`[!!! Dynamic Dates] Today: ${formatDateForEL(today)}, Tomorrow: ${formatDateForEL(tomorrow)}, Next Week: ${formatDateForEL(nextWeek)}`);
                 } catch (sendError) {
-                  console.error(`[!!! CONFIG ERROR] Failed to send config for "${customerName}":`, sendError);
+                  console.error(`[!!! CONFIG ERROR] Failed to send normal conversation config for "${customerName}":`, sendError);
                 }
+              } else if (isVoicemailCall) {
+                console.log(`[!!! IMMEDIATE CONFIG] Skipping normal config - this is a voicemail call for ${callSid}`);
               } else {
-                console.error(`[!!! CONFIG ERROR] Cannot send config - Missing requirements:`, {
+                console.error(`[!!! CONFIG ERROR] Cannot send normal conversation config - Missing requirements:`, {
                   callSid: !!callSid,
                   initialConfigSent: initialConfigSent,
                   decodedCustomParameters: !!decodedCustomParameters,
+                  isVoicemailCall: isVoicemailCall,
                   decodedCustomParametersContent: decodedCustomParameters
                 });
               }
@@ -1074,6 +1111,23 @@ export default async function (fastify, opts) {
                           if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                               elevenLabsWs.send(JSON.stringify(response));
                           }
+                          
+                          // 🎯 VOICEMAIL COMPLETION HANDLING
+                          if (tool_name === "end_voicemail_call") {
+                            console.log(`[🎯 VOICEMAIL] Voicemail tool executed, ending call gracefully for ${callSid}`);
+                            setTimeout(() => {
+                              if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                                console.log(`[🎯 VOICEMAIL] Closing ElevenLabs connection after voicemail completion`);
+                                elevenLabsWs.close();
+                              }
+                              // Also end the Twilio call
+                              if (callSid) {
+                                twilioClient.calls(callSid).update({ status: "completed" })
+                                  .then(() => console.log(`[🎯 VOICEMAIL] Twilio call ${callSid} ended after voicemail`))
+                                  .catch(err => console.error(`[🎯 VOICEMAIL ERROR] Failed to end Twilio call:`, err));
+                              }
+                            }, 2000); // 2 second delay to ensure final audio is sent
+                          }
                       })
                       .catch(error => {
                           const response = {
@@ -1210,13 +1264,74 @@ export default async function (fastify, opts) {
                       const answeredBy = amdResults[callSid];
                       amdResult = answeredBy;
                       console.log(`[AMD Check] Result for ${callSid}: ${answeredBy}`);
-                      if (answeredBy === "machine_start" || answeredBy === "machine_end_beep" || answeredBy === "fax") {
+                      if (answeredBy === "machine_start" || answeredBy === "machine_end_beep" || answeredBy === "machine_end_silence" || answeredBy === "machine_end_other" || answeredBy === "fax") {
                            isVoicemail = true;
-                           console.log(`[AMD Check] Voicemail/Machine detected for ${callSid}`);
+                           console.log(`[AMD Check] Voicemail/Machine detected for ${callSid} - Will send voicemail message`);
                       }
-                      delete amdResults[callSid];
+                      // Don't delete AMD result yet - we'll use it for voicemail handling
                   } else {
-                      console.log(`[AMD Check] No AMD result found for ${callSid} after wait.`);
+                      console.log(`[AMD Check] No AMD result found for ${callSid}, treating as normal call.`);
+                  }
+
+                  // 🎯 VOICEMAIL-SPECIFIC HANDLING
+                  if (isVoicemail) {
+                    console.log(`[🎯 VOICEMAIL] Configuring ElevenLabs for voicemail message delivery to ${decodedCustomParameters?.name}`);
+                    
+                    // Send voicemail-specific configuration to ElevenLabs
+                    const voicemailConfig = {
+                      type: "conversation_initiation_client_data",
+                      conversation_config_override: {
+                        agent: {
+                          first_message: `Hi ${decodedCustomParameters?.name || 'there'}, this is Alex from Build and Bloom. I'm calling about your interest in AI automation for real estate. I'd love to show you how we can save you hours each day with our automated systems. Please call me back at your convenience, or visit our website to book a quick 15-minute demo. Thanks, and I look forward to helping you grow your business!`,
+                          system_prompt: `You are Alex from Build and Bloom leaving a voicemail message. This is a voicemail system, not a live conversation. 
+
+VOICEMAIL INSTRUCTIONS:
+1. Deliver the voicemail message clearly and professionally
+2. Keep it concise (30-45 seconds maximum)
+3. After completing the voicemail message, wait 2 seconds
+4. Then say "Have a great day!" 
+5. Immediately after saying "Have a great day", call the end_voicemail_call tool to signal completion
+6. Do NOT wait for responses or engage in conversation
+7. Do NOT ask questions that expect answers
+
+Remember: This is a one-way message delivery to a voicemail system.`,
+                          language: "en"
+                        },
+                        // Optimize for voicemail delivery
+                        tts: {
+                          model: "turbo_v2", // Fast model for voicemail
+                          voice_settings: {
+                            speaking_rate: 1.1, // Slightly faster for voicemail
+                            emotion: "neutral"
+                          }
+                        }
+                      },
+                      dynamic_variables: {
+                        "CUSTOMER_NAME": decodedCustomParameters?.name || "valued customer",
+                        "PHONE_NUMBER": decodedCustomParameters?.number || "Unknown",
+                        "VOICEMAIL_MODE": "true",
+                        "COMPANY": "Build and Bloom",
+                        "SERVICE": "AI automation for real estate"
+                      }
+                    };
+                    
+                    if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                      try {
+                        elevenLabsWs.send(JSON.stringify(voicemailConfig));
+                        console.log(`[🎯 VOICEMAIL] Sent voicemail configuration for ${decodedCustomParameters?.name}`);
+                        
+                        // Set a shorter timeout for voicemail completion
+                        setTimeout(() => {
+                          if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                            console.log(`[🎯 VOICEMAIL] Ending voicemail session for ${callSid}`);
+                            elevenLabsWs.close();
+                          }
+                        }, 30000); // 30 seconds for voicemail delivery
+                        
+                      } catch (voicemailSendError) {
+                        console.error(`[🎯 VOICEMAIL ERROR] Failed to send voicemail config:`, voicemailSendError);
+                      }
+                    }
                   }
 
                   console.log("[!!! Debug Start Event] Finished processing start event logic.");
@@ -1347,16 +1462,29 @@ export default async function (fastify, opts) {
     console.log(`[Call Status] CallSid: ${CallSid}, Status: ${CallStatus}, AnsweredBy: ${AnsweredBy}, Duration: ${Duration}`);
 
     const machineResponses = ["machine_start", "machine_end_beep", "machine_end_silence", "machine_end_other", "fax"];
+    
     if (AnsweredBy && machineResponses.includes(AnsweredBy)) {
-      console.log(`[AMD] Machine detected (${AnsweredBy}) for CallSid: ${CallSid}. Ending call.`);
-      try {
-        await twilioClient.calls(CallSid).update({ status: "completed" });
-        console.log(`[AMD] Successfully sent command to end call ${CallSid}`);
-      } catch (error) {
-        console.error(`[AMD] Error trying to end call ${CallSid} after machine detection:`, error);
-      }
+      console.log(`[AMD] Machine/Voicemail detected (${AnsweredBy}) for CallSid: ${CallSid}. Will leave voicemail message.`);
+      
+      // Store AMD result for voicemail handling instead of immediately ending call
+      amdResults[CallSid] = AnsweredBy;
+      
+      // Set a timeout to end call after voicemail message (60 seconds max)
+      setTimeout(async () => {
+        try {
+          console.log(`[AMD Timeout] Ending call ${CallSid} after voicemail message timeout`);
+          await twilioClient.calls(CallSid).update({ status: "completed" });
+        } catch (error) {
+          console.error(`[AMD Timeout] Error ending call ${CallSid}:`, error);
+        }
+        // Clean up AMD result
+        if (amdResults[CallSid]) {
+          delete amdResults[CallSid];
+        }
+      }, 60000); // 60 second timeout for voicemail
+      
     } else if (AnsweredBy && AnsweredBy === "human") {
-       console.log(`[AMD] Human detected for CallSid: ${CallSid}. Call continues.`);
+       console.log(`[AMD] Human detected for CallSid: ${CallSid}. Call continues normally.`);
     } else if (AnsweredBy) {
        console.log(`[AMD] Received AnsweredBy status '${AnsweredBy}' for CallSid: ${CallSid}. Call continues.`);
     }
