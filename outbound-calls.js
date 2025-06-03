@@ -899,7 +899,7 @@ export default async function (fastify, opts) {
                   });
                 };
                 
-                const firstMessage = `Hi ${customerName}, this is Alex from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`;
+                const firstMessage = `Hi ${customerName}, this is Sarah from Build and Bloom. I'm calling about the AI automation interest you showed on Facebook. Quick question - what's eating up most of your time as an agent right now?`;
                 console.log(`[!!! IMMEDIATE CONFIG] First message will be: "${firstMessage}"`);
                 
                 const initialConfig = {
@@ -907,7 +907,7 @@ export default async function (fastify, opts) {
                   conversation_config_override: {
                     agent: {
                       first_message: firstMessage,
-                      system_prompt: "You are Alex, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful. When booking appointments, use the dynamic date variables provided to offer realistic scheduling options."
+                      system_prompt: "You are Sarah, a friendly AI assistant from Build and Bloom calling leads who showed interest in AI automation. Be conversational and helpful. When booking appointments, use the dynamic date variables provided to offer realistic scheduling options."
                     }
                     // Let ElevenLabs dashboard settings handle audio format
                   },
@@ -1282,8 +1282,8 @@ export default async function (fastify, opts) {
                       type: "conversation_initiation_client_data",
                       conversation_config_override: {
                         agent: {
-                          first_message: `Hi ${decodedCustomParameters?.name || 'there'}, this is Alex from Build and Bloom. I'm calling about your interest in AI automation for real estate. I'd love to show you how we can save you hours each day with our automated systems. Please call me back at your convenience, or visit our website to book a quick 15-minute demo. Thanks, and I look forward to helping you grow your business!`,
-                          system_prompt: `You are Alex from Build and Bloom leaving a voicemail message. This is a voicemail system, not a live conversation. 
+                          first_message: `Hi ${decodedCustomParameters?.name || 'there'}, this is Sarah from Build and Bloom. I'm calling about your interest in AI automation for real estate. I'd love to show you how we can save you hours each day with our automated systems. Please call me back at your convenience, or visit our website to book a quick 15-minute demo. Thanks, and I look forward to helping you grow your business!`,
+                          system_prompt: `You are Sarah from Build and Bloom leaving a voicemail message. This is a voicemail system, not a live conversation. 
 
 VOICEMAIL INSTRUCTIONS:
 1. Deliver the voicemail message clearly and professionally
